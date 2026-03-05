@@ -148,11 +148,11 @@ class AIAgent:
     def speak(self, context: dict, round_num: int = 1) -> tuple[str, str]:
         """
         生成发言
-        
+
         Args:
             context: 当前情境信息
             round_num: 第几轮发言
-        
+
         Returns:
             (发言内容，内心独白)
         """
@@ -164,50 +164,53 @@ class AIAgent:
         is_wolf = self.player.role == Role.WEREWOLF
         previous_speeches = context.get("previous_speeches", [])
         alive_players = context.get("alive_players", [])
-        
-        # 构建发言历史
+
+        # 构建发言历史（更详细）
         speech_history = ""
         if previous_speeches:
             speech_history = "\n".join([
-                f"  {s['speaker']}({s['player_id']}号): {s['content']}"
-                for s in previous_speeches[-8:]  # 显示最近 8 条发言
+                f"  {s['speaker']}({s['player_id']}号): {s['content'][:60]}..."  # 显示前 60 字
+                for s in previous_speeches[-6:]  # 显示最近 6 条发言
             ])
-        
+
         # 构建信任/怀疑列表提示
         trust_hint = ""
         if self.trust_list:
             trust_hint = f"你比较信任的玩家：{', '.join([f'{p}号' for p in self.trust_list])}。"
         if self.suspect_list:
             trust_hint += f"你怀疑的玩家：{', '.join([f'{p}号' for p in self.suspect_list])}。"
-        
-        # 构建情境提示
+
+        # 死亡玩家列表
+        dead_players = [p for p in range(1, 10) if p not in alive_players]
+        death_info = f"已死亡玩家：{', '.join([f'{p}号' for p in dead_players])}" if dead_players else "无人死亡"
+
+        # 构建情境提示（更详细的要求）
         user_prompt = f"""【第{day}天白天 第{round_num}轮发言】
 
-昨晚情况：{', '.join([f'{p}号死亡' for p in night_deaths]) if night_deaths else '无人死亡'}
-你是{self.player.role.value if self.player.role else '玩家'}{'（预言家）' if is_seer else ''}
+{death_info}
 存活玩家：{', '.join([f'{p}号' for p in alive_players])}
-
 {trust_hint}
 
 其他玩家发言：
 {speech_history if speech_history else '（你是第一个发言）'}
 
 【发言要求】
-1. 必须分析至少一个具体玩家（支持或质疑）
-2. 如果有信息（如预言家查验），要适当透露
-3. 发言要有立场，不要模棱两可
-4. 符合你的性格特点
+1. 必须分析至少 1-2 个具体玩家（支持或质疑，说明理由）
+2. 如果有信息（如预言家查验、猎人身份），适当时机要透露
+3. 发言要有明确立场，不要模棱两可
+4. 符合你的性格特点（话多/话少/激进/低调等）
 5. 长度控制在{self.personality.min_length}-{self.personality.max_length}字
+6. 如果是第 2 轮发言，要回应之前其他玩家的质疑或支持
 """
-        
+
         system_prompt = self._build_system_prompt()
-        
+
         speech, inner_thought = self.llm.generate_with_inner_thought(
-            system_prompt, 
+            system_prompt,
             user_prompt,
             max_length=self.personality.max_length
         )
-        
+
         # 添加自己的发言到记忆
         self.add_memory({
             "type": "speech",
@@ -217,7 +220,7 @@ class AIAgent:
             "day": day,
             "round": round_num,
         })
-        
+
         return speech, inner_thought
     
     def decide_night_action(self, context: dict) -> dict:

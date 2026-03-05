@@ -111,25 +111,36 @@ class GameEngine:
         """运行夜晚阶段"""
         self.ui.notify_game_event("night_start", {"night": self.state.night_number})
         self.state.phase = Phase.NIGHT
-        self._log_event("night_start", {"night": self.state.night_number})
-        
+        self._log_event("night_start", {
+            "night": self.state.night_number,
+            "alive_players": [p.id for p in self.state.get_alive_players()],
+        })
+
         night_deaths = []
-        
+
         # 狼人行动
         self.ui.display_system_message("狼人请睁眼，选择袭击目标...")
         wolf_action = self._handle_werewolf_action()
-        
+
         # 预言家行动
         self.ui.display_system_message("预言家请睁眼，选择查验目标...")
         seer_action = self._handle_seer_action()
-        
+
         # 女巫行动
         self.ui.display_system_message("女巫请睁眼，选择是否使用药剂...")
         witch_action = self._handle_witch_action(wolf_action.get("target") if wolf_action else None)
-        
+
         # 处理夜晚结果
         night_deaths = self._process_night_results(wolf_action, seer_action, witch_action)
-        
+
+        # 记录夜晚行动摘要
+        self._log_event("night_actions_summary", {
+            "wolf_action": wolf_action,
+            "seer_action": seer_action,
+            "witch_action": witch_action,
+            "night_deaths": night_deaths,
+        })
+
         return night_deaths
     
     def _handle_werewolf_action(self) -> dict:
@@ -296,7 +307,11 @@ class GameEngine:
         """运行白天阶段 - 完整流程"""
         self.ui.notify_game_event("day_start", {"day": self.state.day_number})
         self.state.phase = Phase.DAY_DISCUSS
-        self._log_event("day_start", {"day": self.state.day_number})
+        self._log_event("day_start", {
+            "day": self.state.day_number,
+            "alive_players": [p.id for p in self.state.get_alive_players()],
+            "night_deaths": [],  # 夜晚死亡已在之前公布
+        })
         
         # 公布昨晚情况
         night_deaths = []  # 实际死亡在夜晚已公布，这里只是逻辑传递
@@ -326,11 +341,11 @@ class GameEngine:
     def _run_president_election(self) -> None:
         """警长竞选环节"""
         self.ui.display_system_message("=== 警长竞选 ===")
-        self._log_event("president_election_start", {})
-        
+        self._log_event("president_election_start", {"day": 1})
+
         alive_players = self.state.get_alive_players()
         candidates = []
-        
+
         # AI 决定是否参选
         for player in alive_players:
             if player.is_human:
@@ -342,13 +357,20 @@ class GameEngine:
                 import random
                 if random.random() > 0.5:
                     candidates.append(player.id)
-        
+
+        # 记录参选玩家
+        self._log_event("president_candidates", {
+            "candidates": candidates,
+            "candidate_names": [self.state.players[pid].name for pid in candidates]
+        })
+
         if not candidates:
             self.ui.display_system_message("无人竞选警长")
+            self._log_event("president_election_end", {"reason": "no_candidates"})
             return
-        
+
         self.ui.display_system_message(f"竞选警长的玩家：{', '.join([f'{p}号' for p in candidates])}")
-        
+
         # 竞选发言
         speeches = []
         for pid in sorted(candidates):
@@ -362,15 +384,23 @@ class GameEngine:
                     "previous_speeches": [],
                     "alive_players": [p.id for p in alive_players],
                 }
-                speech, _ = agent.speak(context, round_num=1)
-            
+                speech, inner_thought = agent.speak(context, round_num=1)
+                
+                # 记录竞选发言的内心独白
+                self._log_event("president_speech", {
+                    "player_id": pid,
+                    "speech": speech,
+                    "inner_thought": inner_thought,
+                })
+
             self.ui.display_message(player.name, f"[警长竞选] {speech}")
             speeches.append({"speaker": player.name, "player_id": pid, "content": speech})
-        
+
         # 投票
         self.ui.display_system_message("=== 警长投票 ===")
         vote_counts = {}
-        
+        vote_details = {}
+
         for voter in alive_players:
             if voter.id not in candidates:
                 if voter.is_human:
@@ -379,6 +409,7 @@ class GameEngine:
                         vote_target = int(vote)
                         if vote_target in candidates:
                             vote_counts[vote_target] = vote_counts.get(vote_target, 0) + 1
+                            vote_details[voter.id] = vote_target
                     except ValueError:
                         pass
                 else:
@@ -388,19 +419,36 @@ class GameEngine:
                     vote = agent.vote(context)
                     if vote and vote in candidates:
                         vote_counts[vote] = vote_counts.get(vote, 0) + 1
-        
+                        vote_details[voter.id] = vote
+
+        # 记录投票详情
+        self._log_event("president_vote", {
+            "vote_counts": vote_counts,
+            "vote_details": vote_details,
+            "voters": [voter.id for voter in alive_players if voter.id not in candidates]
+        })
+
         if vote_counts:
             max_votes = max(vote_counts.values())
             winners = [k for k, v in vote_counts.items() if v == max_votes]
-            
+
             if len(winners) == 1:
                 self.president_id = winners[0]
                 self.ui.display_system_message(f"{winners[0]}号 当选警长！")
-                self._log_event("president_elected", {"president_id": winners[0]})
+                self._log_event("president_elected", {
+                    "president_id": winners[0],
+                    "votes": max_votes,
+                    "total_voters": sum(vote_counts.values())
+                })
             else:
                 self.ui.display_system_message("平票，无人当选警长")
+                self._log_event("president_election_end", {
+                    "reason": "tie",
+                    "tied_candidates": winners
+                })
         else:
             self.ui.display_system_message("无人投票，无人当选警长")
+            self._log_event("president_election_end", {"reason": "no_votes"})
     
     def _run_discussion(self, rounds: int = 2) -> None:
         """运行讨论阶段 - 多轮"""
@@ -500,22 +548,25 @@ class GameEngine:
         """运行投票阶段"""
         self.state.phase = Phase.DAY_VOTE
         self.ui.notify_game_event("vote_result", {})
-        
+
         alive_players = self.state.get_alive_players()
         vote_counts = {}
-        
+        vote_details = {}
+
         # 收集投票
         for player in alive_players:
             if player.is_human:
                 vote = self.ui.get_player_input(f"请{player.name}投票（输入玩家编号或 skip 弃票）: ")
                 if vote.lower() == "skip":
+                    vote_details[player.id] = None
                     continue
                 try:
                     vote_target = int(vote)
                     if vote_target in [p.id for p in alive_players]:
                         vote_counts[vote_target] = vote_counts.get(vote_target, 0) + 1
+                        vote_details[player.id] = vote_target
                 except ValueError:
-                    pass
+                    vote_details[player.id] = None
             else:
                 agent = self.agents[player.id]
                 context = {
@@ -524,8 +575,19 @@ class GameEngine:
                 vote = agent.vote(context)
                 if vote:
                     vote_counts[vote] = vote_counts.get(vote, 0) + 1
-        
+                    vote_details[player.id] = vote
+                else:
+                    vote_details[player.id] = None
+
         self.state.vote_counts = vote_counts
+
+        # 记录投票详情
+        self._log_event("day_vote", {
+            "day": self.state.day_number,
+            "vote_counts": vote_counts,
+            "vote_details": vote_details,
+            "alive_players": [p.id for p in alive_players],
+        })
         
         # 公布结果
         if vote_counts:
@@ -595,7 +657,26 @@ class GameEngine:
     def _end_game(self) -> None:
         """结束游戏"""
         self.ui.notify_game_event("game_over", {"winner": self.state.winner})
-        self._log_event("game_over", {"winner": self.state.winner})
+        
+        # 记录游戏结束详情
+        self._log_event("game_over", {
+            "winner": self.state.winner,
+            "winner_name": "狼人" if self.state.winner == "werewolf" else "好人阵营",
+            "total_days": self.state.day_number,
+            "total_nights": self.state.night_number,
+            "final_players": {
+                pid: {
+                    "role": p.role.value,
+                    "is_alive": p.is_alive,
+                    "personality": p.personality,
+                }
+                for pid, p in self.state.players.items()
+            },
+            "death_log": [
+                h for h in self.state.history
+                if h["type"] in ["night_death", "player_eliminated"]
+            ],
+        })
         
         self.ui.display_system_message("=== 游戏结束 ===")
         if self.state.winner == "werewolf":
