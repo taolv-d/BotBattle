@@ -1,25 +1,104 @@
 """命令行界面实现"""
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from .base import UIBase
+
+# 避免循环导入，仅在类型检查时导入
+if TYPE_CHECKING:
+    from core.state import GameState
 
 
 class CLI(UIBase):
-    """命令行界面"""
+    """命令行界面 - 支持上帝视角显示身份"""
 
-    def __init__(self, show_inner_thoughts: bool = False):
+    def __init__(self, show_inner_thoughts: bool = False, god_view: bool = True):
         """
         Args:
             show_inner_thoughts: 是否显示内心独白（默认不显示，避免界面杂乱）
+            god_view: 是否开启上帝视角（显示所有玩家身份）
         """
         self.show_inner_thoughts = show_inner_thoughts
+        self.god_view = god_view
+        self.game_state: Optional["GameState"] = None
+        self.human_player_id: Optional[int] = None
+
+    def set_game_state(self, game_state: "GameState", human_player_id: Optional[int] = None) -> None:
+        """
+        设置游戏状态（用于获取玩家身份信息）
+
+        Args:
+            game_state: 游戏状态对象
+            human_player_id: 人类玩家 ID（None 表示观察模式）
+        """
+        self.game_state = game_state
+        self.human_player_id = human_player_id
+
+    def _format_speaker_name(self, speaker: str) -> str:
+        """
+        格式化发言者名字（添加身份和名人名字）
+
+        Args:
+            speaker: 原始发言者名字，如 "7 号玩家"
+
+        Returns:
+            格式化后的名字，如 "7 号玩家 (诸葛亮)- 预言家"
+        """
+        if not self.game_state:
+            return speaker
+
+        # 从 "7 号玩家" 中提取玩家 ID
+        try:
+            player_id = int(speaker.split("号")[0])
+            player = self.game_state.players.get(player_id)
+            
+            if not player:
+                return speaker
+            
+            # 构建名字部分
+            if player.celebrity_name:
+                name_with_celebrity = f"{player.name}({player.celebrity_name})"
+            else:
+                name_with_celebrity = player.name
+            
+            # 添加身份（上帝视角）
+            if self.god_view:
+                # 人类玩家只能看到自己的身份
+                if self.human_player_id is not None and player_id != self.human_player_id:
+                    return name_with_celebrity
+                
+                if player.role:
+                    role_map = {
+                        "werewolf": "狼人",
+                        "villager": "村民",
+                        "seer": "预言家",
+                        "witch": "女巫",
+                        "hunter": "猎人",
+                    }
+                    role_name = role_map.get(player.role.value, player.role.value)
+                    return f"{name_with_celebrity}-{role_name}"
+            
+            return name_with_celebrity
+            
+        except (ValueError, IndexError):
+            pass
+
+        return speaker
 
     def display_message(self, speaker: str, message: str) -> None:
-        print(f"\n[{speaker}] {message}")
+        display_name = self._format_speaker_name(speaker)
+        print(f"\n[{display_name}] {message}")
 
     def display_inner_thought(self, speaker: str, thought: str) -> None:
-        """内心独白写入日志，终端默认不显示"""
-        if self.show_inner_thoughts:
-            print(f"  -> ({speaker} 的内心独白：{thought})")
+        """
+        显示内心独白（上帝视角可见）
+        
+        Args:
+            speaker: 发言者
+            thought: 内心独白内容
+        """
+        # 上帝视角或明确要显示内心独白时才显示
+        if self.god_view or self.show_inner_thoughts:
+            if thought:  # 只有非空内容才显示
+                print(f"  [{speaker} 的内心] {thought}")
 
     def get_player_input(self, prompt: str) -> str:
         try:

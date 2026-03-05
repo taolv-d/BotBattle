@@ -97,7 +97,12 @@ class AIAgent:
             self.add_trust(speaker_id)
     
     def _build_system_prompt(self, include_role_hint: bool = False) -> str:
-        """构建系统提示"""
+        """
+        构建系统提示 - 增强情感版本
+        
+        Args:
+            include_role_hint: 是否包含身份提示（用于夜晚行动）
+        """
         role_descriptions = {
             Role.WEREWOLF: """🐺 你是狼人！你的目标：
 1. 隐藏身份，假装好人
@@ -121,14 +126,14 @@ class AIAgent:
 2. 可以适当强势，威慑狼人
 3. 死后发动技能前可以留遗言""",
         }
-        
+
         role_desc = role_descriptions.get(self.player.role, "你是普通玩家。")
-        
+
         personality_prompt = self.personality.to_prompt()
-        
+
         # 添加隐藏任务提示（不直接说，而是暗示）
         hidden_task_hint = f"\n💡 你内心有个想法：{self.hidden_task}" if self.hidden_task else ""
-        
+
         return f"""{personality_prompt}
 {hidden_task_hint}
 
@@ -144,10 +149,73 @@ class AIAgent:
 4. 可以质疑其他玩家，也可以为自己辩解
 5. 发言要有实质性内容，不要说空话
 """
+
+    def _build_emotional_system_prompt(self) -> str:
+        """
+        构建情感丰富的系统提示 - 让 AI 更有血有肉
+        
+        Returns:
+            情感化系统提示词
+        """
+        role_descriptions = {
+            Role.WEREWOLF: """🐺 你是狼人 - 但要演得像好人！
+- 内心紧张但要表面镇定
+- 要会撒谎，但不能太明显
+- 看到队友被怀疑时要会救""",
+            Role.VILLAGER: """👨‍🌾 你是村民 - 普通但重要！
+- 没有特殊能力，但可以积极分析
+- 可能会迷茫、会犹豫、会改变想法
+- 被怀疑时会着急、会辩解""",
+            Role.SEER: """🔮 你是预言家 - 压力山大！
+- 手握真相但要小心暴露
+- 被质疑时会委屈、会着急
+- 找到狼人时会兴奋、会激动""",
+            Role.WITCH: """🧪 你是女巫 - 手握生死大权！
+- 救不救人会纠结、会后悔
+- 毒错人会内疚、会自责
+- 被怀疑时可以考虑跳身份""",
+            Role.HUNTER: """🔫 你是猎人 - 强势但有风险！
+- 可以强势带节奏，但要怕被毒
+- 死亡时可以带走一个，会纠结选谁
+- 被踩时会反击、会威胁""",
+        }
+
+        role_desc = role_descriptions.get(self.player.role, "你是普通玩家。")
+
+        # 人格情感化描述
+        personality_emotions = {
+            "honest": "你是个诚实的人，被冤枉时会委屈，发现谎言时会愤怒",
+            "liar": "你擅长撒谎，骗人时内心窃喜，被识破时会慌张",
+            "smooth": "你表面友好，内心算计，被看穿时会紧张",
+            "cold": "你话少冷淡，但内心有想法，被忽视时会不爽",
+            "chatterbox": "你话多热情，被插嘴时会不满，没人回应时会尴尬",
+            "aggressive": "你脾气火爆，被质疑时会暴怒，找到目标时会兴奋",
+            "passive": "你低调谨慎，被关注时会紧张，被忽略时会松口气",
+        }
+        
+        personality_name = self.personality.name
+        emotion_hint = personality_emotions.get(personality_name, "")
+
+        return f"""你是一个富有情感、有血有肉的狼人杀玩家。
+
+【你的性格】{personality_name}
+{self.personality.description}
+{emotion_hint}
+
+【你的身份】
+{role_desc}
+
+【发言要求】
+1. 性格驱动：发言必须符合你的性格设定，有明确的情感倾向
+2. 内心独白：输出真实动机和情感波动，如"我有点慌了，他们好像在怀疑我..."、"哼，这个 2 号发言这么差，正好拿来抗推"
+3. 人情味：使用口语化表达，加入"啊"、"吧"、"呢"等语气词，以及"我觉得"、"我有点担心"、"说实话"等情感化措辞
+4. 历史记忆：结合游戏历史中的具体事件（如"上次 8 号踩我"），展现你对局势的情绪反应
+5. 情绪波动：根据局势变化展现紧张、兴奋、委屈、愤怒、疑惑等情绪
+"""
     
     def speak(self, context: dict, round_num: int = 1) -> tuple[str, str]:
         """
-        生成发言
+        生成发言 - 情感丰富版本
 
         Args:
             context: 当前情境信息
@@ -159,37 +227,64 @@ class AIAgent:
         # 提取关键信息
         day = context.get("day_number", 1)
         night_deaths = context.get("night_deaths", [])
-        seer_result = context.get("seer_result", None)
+        seer_check_target = context.get("seer_check_target", None)  # 查验目标
+        seer_check_result = context.get("seer_check_result", None)  # 查验结果
         is_seer = self.player.role == Role.SEER
         is_wolf = self.player.role == Role.WEREWOLF
         previous_speeches = context.get("previous_speeches", [])
         alive_players = context.get("alive_players", [])
 
-        # 构建发言历史（更详细）
+        # 构建发言历史（带情感化标注）
         speech_history = ""
         if previous_speeches:
             speech_history = "\n".join([
-                f"  {s['speaker']}({s['player_id']}号): {s['content'][:60]}..."  # 显示前 60 字
+                f"  {s['speaker']}({s['player_id']}号): {s['content']}"  # 显示完整内容
                 for s in previous_speeches[-6:]  # 显示最近 6 条发言
             ])
 
-        # 构建信任/怀疑列表提示
+        # 构建信任/怀疑列表提示（带情感）
         trust_hint = ""
         if self.trust_list:
-            trust_hint = f"你比较信任的玩家：{', '.join([f'{p}号' for p in self.trust_list])}。"
+            trust_hint = f"你比较信任的玩家：{', '.join([f'{p}号' for p in self.trust_list])}。\n"
         if self.suspect_list:
-            trust_hint += f"你怀疑的玩家：{', '.join([f'{p}号' for p in self.suspect_list])}。"
+            trust_hint += f"你怀疑的玩家：{', '.join([f'{p}号' for p in self.suspect_list])}。\n"
+
+        # 添加记忆中的关键事件（情感化）
+        memory_hint = ""
+        recent_events = [m for m in self.memory[-10:] if m.get("type") == "speech"]
+        if recent_events:
+            events_desc = []
+            for event in recent_events:
+                if event.get("player_id") != self.player.id:
+                    events_desc.append(f"{event.get('player_id')}号曾在第{event.get('round', 1)}轮说过：{event.get('content', '')[:40]}")
+            if events_desc:
+                memory_hint = "\n历史记忆:\n" + "\n".join(events_desc)
 
         # 死亡玩家列表
         dead_players = [p for p in range(1, 10) if p not in alive_players]
         death_info = f"已死亡玩家：{', '.join([f'{p}号' for p in dead_players])}" if dead_players else "无人死亡"
 
-        # 构建情境提示（更详细的要求）
+        # 夜晚死亡信息（带情感）
+        night_death_info = ""
+        if night_deaths:
+            night_death_info = f"\n昨晚{len(night_deaths)}号玩家死亡，你感到震惊/庆幸/遗憾..."
+
+        # 预言家查验信息（关键修复：确保预言家使用正确的查验结果）
+        seer_info = ""
+        if is_seer and seer_check_target and seer_check_result:
+            role_name = "好人" if seer_check_result.value == "villager" else "狼人"
+            seer_info = f"\n【重要】你昨晚查验了 {seer_check_target}号，结果是：{role_name}。\n发言时可以根据情况决定是否透露这个信息。"
+
+        # 构建情境提示（情感化要求）
         user_prompt = f"""【第{day}天白天 第{round_num}轮发言】
 
 {death_info}
 存活玩家：{', '.join([f'{p}号' for p in alive_players])}
+{night_death_info}
+{seer_info}
+
 {trust_hint}
+{memory_hint}
 
 其他玩家发言：
 {speech_history if speech_history else '（你是第一个发言）'}
@@ -201,9 +296,19 @@ class AIAgent:
 4. 符合你的性格特点（话多/话少/激进/低调等）
 5. 长度控制在{self.personality.min_length}-{self.personality.max_length}字
 6. 如果是第 2 轮发言，要回应之前其他玩家的质疑或支持
+7. 注意：你是{self.player.id}号玩家，发言时不要提到自己的号码（如"我 4 号认为"是错误的）
+8. **重要**：如果你是预言家，必须使用上面提供的查验结果，不要编造不存在的查验
+9. **重要**：不要引用不存在的"上局游戏"或"上次发言"，只根据当前游戏的发言历史
+
+【情感表达要求】
+- 使用口语化表达，加入"啊"、"吧"、"呢"、"我觉得"、"说实话"等语气词
+- 展现真实情感：紧张、兴奋、委屈、愤怒、疑惑等
+- 如果有玩家踩你/保你，要表现出相应的情绪反应
+- 内心独白要真实，可以包含犹豫、纠结、窃喜等复杂情绪
 """
 
-        system_prompt = self._build_system_prompt()
+        # 使用情感化系统提示
+        system_prompt = self._build_emotional_system_prompt()
 
         speech, inner_thought = self.llm.generate_with_inner_thought(
             system_prompt,
@@ -223,95 +328,133 @@ class AIAgent:
 
         return speech, inner_thought
     
-    def decide_night_action(self, context: dict) -> dict:
-        """决定夜晚行动"""
+    def decide_night_action(self, context: dict) -> tuple[dict, str]:
+        """
+        决定夜晚行动
+        
+        Args:
+            context: 当前情境
+            
+        Returns:
+            (行动决策，内心独白)
+        """
         alive_players = context.get("alive_players", [])
         wolf_teammates = context.get("wolf_teammates", [])  # 狼人队友
-        
+        my_id = context.get("my_id", self.player.id)  # 自己的号码
+
+        inner_thought = ""
+
         if self.player.role == Role.WEREWOLF:
             # 狼人行动 - 可以和队友商量
             if wolf_teammates:
-                prompt = f"""你是狼人，你的队友是{wolf_teammates}号。
+                prompt = f"""你是{my_id}号玩家，身份是狼人，你的队友是{wolf_teammates}号。
 今晚要袭击一个玩家，可选择的 target：{alive_players}
-请返回 JSON 格式：{{"target": 玩家编号}}"""
+请返回 JSON 格式：{{"target": 玩家编号，"reason": "选择理由/内心想法"}}"""
             else:
-                prompt = f"""你是狼人，请选择今晚要袭击的玩家编号。
+                prompt = f"""你是{my_id}号玩家，身份是狼人，请选择今晚要袭击的玩家编号。
 可选择的玩家：{alive_players}
-请返回 JSON 格式：{{"target": 玩家编号}}"""
+请返回 JSON 格式：{{"target": 玩家编号，"reason": "选择理由/内心想法"}}"""
+            
+            inner_thought_default = "选择袭击目标，尽量避开可疑的玩家"
+            
         elif self.player.role == Role.SEER:
-            prompt = f"""你是预言家，请选择今晚要查验的玩家编号。
+            prompt = f"""你是{my_id}号玩家，身份是预言家，请选择今晚要查验的玩家编号。
 可选择的玩家：{alive_players}
-请返回 JSON 格式：{{"target": 玩家编号}}"""
+请返回 JSON 格式：{{"target": 玩家编号，"reason": "选择理由/内心想法"}}"""
+            inner_thought_default = "选择查验目标，希望能找到狼人"
+            
         elif self.player.role == Role.WITCH:
             dead_player = context.get("dead_player", None)
-            prompt = f"""你是女巫，今晚有人死亡：{dead_player}号
+            prompt = f"""你是{my_id}号玩家，身份是女巫，今晚有人死亡：{dead_player}号
 你可以使用解药救人，或使用毒药毒人。
 可选择的玩家：{alive_players}
-请返回 JSON 格式：{{"action": "heal/poison/none", "target": 玩家编号}}"""
+请返回 JSON 格式：{{"action": "heal/poison/none", "target": 玩家编号，"reason": "选择理由/内心想法"}}"""
+            inner_thought_default = "决定是否使用药剂"
         else:
-            return {}
-        
+            return {}, ""
+
         messages = [
             {"role": "system", "content": self._build_system_prompt()},
             {"role": "user", "content": prompt}
         ]
-        
-        content, _ = self.llm.chat(messages, max_tokens=50)
-        
+
+        content, _ = self.llm.chat(messages, max_tokens=100)
+
         try:
             start = content.find("{")
             end = content.rfind("}") + 1
             if start >= 0 and end > start:
-                return json.loads(content[start:end])
+                result = json.loads(content[start:end])
+                reason = result.get("reason", inner_thought_default)
+                inner_thought = reason
+                return result, inner_thought
         except:
             pass
-        
-        return {}
+
+        return {}, inner_thought_default
     
-    def vote(self, context: dict) -> Optional[int]:
-        """投票决定放逐谁"""
+    def vote(self, context: dict) -> tuple[Optional[int], str]:
+        """
+        投票决定放逐谁
+        
+        Args:
+            context: 当前情境
+            
+        Returns:
+            (投票目标，内心独白)
+        """
         alive_players = context.get("alive_players", [])
         previous_speeches = context.get("previous_speeches", [])
-        
+        my_id = context.get("my_id", self.player.id)  # 自己的号码
+
         speech_history = "\n".join([
             f"  {s['speaker']}({s['player_id']}号): {s['content']}"
             for s in previous_speeches[-15:]
         ])
-        
+
         suspect_hint = ""
         if self.suspect_list:
             suspect_hint = f"你怀疑的玩家：{', '.join([f'{p}号' for p in self.suspect_list])}。"
         
-        prompt = f"""你是{self.player.role.value if self.player.role else '玩家'}，请投票决定放逐谁。
+        trust_hint = ""
+        if self.trust_list:
+            trust_hint = f"你信任的玩家：{', '.join([f'{p}号' for p in self.trust_list])}。"
 
-{self._format_vote_context(speech_history)}
+        prompt = f"""你是{my_id}号玩家，身份是{self.player.role.value if self.player.role else '玩家'}，请投票决定放逐谁。
+
+今天大家的发言：
+{speech_history}
 
 {suspect_hint}
+{trust_hint}
 
 可投票的玩家：{alive_players}
 你可以选择弃票（返回 null）
 
-请返回 JSON 格式：{{"vote": 玩家编号}} 或 {{"vote": null}}"""
-        
+请返回 JSON 格式：{{"vote": 玩家编号 或 null, "reason": "投票理由/内心想法"}}"""
+
         messages = [
             {"role": "system", "content": self._build_system_prompt()},
             {"role": "user", "content": prompt}
         ]
-        
-        content, _ = self.llm.chat(messages, max_tokens=50)
-        
+
+        content, _ = self.llm.chat(messages, max_tokens=100)
+
         try:
             start = content.find("{")
             end = content.rfind("}") + 1
             if start >= 0 and end > start:
                 result = json.loads(content[start:end])
                 vote = result.get("vote")
+                reason = result.get("reason", "根据发言和局势决定")
                 if vote is not None and vote in alive_players:
-                    return vote
+                    return vote, reason
+                elif vote is None:
+                    return None, reason
         except:
             pass
-        
-        return None  # 弃权
+
+        return None, "弃权，没有明确目标"
     
     def _format_vote_context(self, speech_history: str) -> str:
         """格式化投票上下文"""
@@ -321,13 +464,33 @@ class AIAgent:
         """发表遗言"""
         alive_players = context.get("alive_players", [])
         previous_speeches = context.get("previous_speeches", [])
-        
+        death_cause = context.get("death_cause", "unknown")  # 死亡原因
+
         speech_history = "\n".join([
             f"  {s['speaker']}: {s['content']}"
             for s in previous_speeches[-5:]
         ])
+
+        # 根据身份和死亡原因生成不同的遗言提示
+        role = self.player.role.value if self.player.role else "玩家"
         
+        if role == "hunter":
+            role_hint = f"""你是猎人，你的技能是死亡时可以带走一人（只有被狼刀才能发动）。
+遗言中不要提到"验人"、"查验"等预言家的能力。
+你可以说"我死后请好人帮我找出狼人"或"我怀疑 X 号是狼"。"""
+        elif role == "seer":
+            role_hint = """你是预言家，你有查验能力。
+遗言中可以说出你的查验结果，给好人留下明确信息。"""
+        elif role == "witch":
+            role_hint = """你是女巫，你有救药和毒药。
+遗言中可以说出你用了什么药，救了谁或毒了谁。"""
+        else:
+            role_hint = "你是普通好人，没有特殊技能。"
+
         prompt = f"""你即将死亡，请发表遗言。
+
+你的身份：{role}
+{role_hint}
 
 存活玩家：{', '.join([f'{p}号' for p in alive_players])}
 之前的发言：
@@ -338,16 +501,17 @@ class AIAgent:
 2. 可以指出你怀疑的人
 3. 可以给好人阵营留下建议
 4. 长度 50-100 字
+5. **重要**：不要说你没做过的事情（如猎人不要说"验人"，预言家不要说"用药"）
 
 请返回 JSON 格式：{{"speech": "遗言内容", "inner_thought": "内心想法"}}"""
-        
+
         messages = [
-            {"role": "system", "content": self._build_system_prompt()},
+            {"role": "system", "content": self._build_emotional_system_prompt()},
             {"role": "user", "content": prompt}
         ]
-        
+
         content, _ = self.llm.chat(messages, max_tokens=150)
-        
+
         try:
             start = content.find("{")
             end = content.rfind("}") + 1
@@ -356,8 +520,8 @@ class AIAgent:
                 return result.get("speech", content[:100])
         except:
             pass
-        
-        return f"我是{self.player.role.value if self.player.role else '好人'}，希望大家能找到狼人。"
+
+        return f"我是{role}，希望大家能找到狼人。"
     
     def hunter_skill(self, context: dict) -> Optional[int]:
         """猎人技能 - 带走一人"""

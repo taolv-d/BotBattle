@@ -12,6 +12,7 @@ from .state import (
     CardType, BasicType, TrickType, EquipmentType
 )
 from ui.base import UIBase
+from ai.names import NameGenerator
 
 
 # 标准牌堆定义
@@ -126,11 +127,14 @@ class ThreeKingdomsEngine:
         self.turn_count: int = 0
         self.log_file: Optional[str] = None
         self.history: list[dict] = []
-        
+
         # 配置
         self.identity_reveal_on_death = True  # 死亡时公开身份
         self.dying_request_peach = True       # 濒死求桃
         self.victory_condition = "simplified" # 简化胜负判定
+        
+        # 名字生成器
+        self.name_generator = NameGenerator()
     
     def setup(self, player_count: int, roles_config: list[dict],
               generals: list[str], human_player_id: Optional[int] = None) -> None:
@@ -167,7 +171,7 @@ class ThreeKingdomsEngine:
             
             # 体力值（根据武将，简化为主公 4 血，其他 3-4 血）
             max_hp = 4 if role == Role.LORD else (3 if i % 2 == 0 else 4)
-            
+
             player = ThreeKingdomsPlayer(
                 id=i,
                 name=f"{i}号玩家",
@@ -176,20 +180,23 @@ class ThreeKingdomsEngine:
                 hp=max_hp,
                 max_hp=max_hp,
             )
+            # 分配名人名字（使用默认人格"passive"）
+            player.celebrity_name = self.name_generator.assign_name_to_player(i, "passive")
             self.players[i] = player
-        
+
         # 创建牌堆
         self.deck = create_standard_deck()
         random.shuffle(self.deck)
-        
+
         # 初始化日志
         self._init_log()
-        
+
         # 记录游戏设置
         self._log_event("game_setup_3k", {
             "player_count": player_count,
             "roles": [r.value for r in all_roles],
             "generals": generals,
+            "celebrity_names": {str(k): v.celebrity_name for k, v in self.players.items()},
         })
         
         # 发初始手牌（4 张）
@@ -220,10 +227,14 @@ class ThreeKingdomsEngine:
         """开始游戏"""
         self.ui.notify_game_event("game_start", {"players": len(self.players)})
         self._log_event("game_start", {"player_count": len(self.players)})
-        
+
+        # 设置 UI 的游戏状态（用于显示名人名字和身份）
+        if hasattr(self.ui, "set_game_state"):
+            self.ui.set_game_state(self.players, None)  # 三国杀暂不支持人类玩家
+
         # 显示各玩家信息（上帝视角）
         self._update_game_board()
-        
+
         # 显示各玩家角色（仅自己可见）
         for player in self.players.values():
             if player.is_human:

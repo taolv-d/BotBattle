@@ -42,6 +42,12 @@ config/system.json
 logs/
 *.log
 
+# 测试相关
+tests/__pycache__/
+tests/common/__pycache__/
+tests/werewolf/__pycache__/
+tests/threekingdoms/__pycache__/
+
 # 临时文件
 *.tmp
 *.bak

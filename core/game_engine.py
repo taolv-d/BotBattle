@@ -8,6 +8,7 @@ from typing import Optional
 from core.state import GameState, Player, Phase, Role
 from ui.base import UIBase
 from ai.agent import AIAgent
+from ai.names import NameGenerator
 
 
 class GameEngine:
@@ -20,28 +21,31 @@ class GameEngine:
         self.agents: dict[int, AIAgent] = {}
         self.human_player_id: Optional[int] = None
         self.log_file: Optional[str] = None
-        
+
         # 游戏配置
         self.witch_heal_used = False  # 女巫解药是否已用
         self.witch_poison_used = False  # 女巫毒药是否已用
         self.president_id: Optional[int] = None  # 警长
         self.round_num = 0  # 发言轮次
+        
+        # 名字生成器
+        self.name_generator = NameGenerator()
     
-    def setup(self, player_count: int, roles_config: list[dict], 
+    def setup(self, player_count: int, roles_config: list[dict],
               personalities: list[str], human_player_id: Optional[int] = None) -> None:
         """设置游戏"""
         self.state.player_count = player_count
         self.human_player_id = human_player_id
-        
+
         # 创建玩家
         all_roles = []
         for rc in roles_config:
             all_roles.extend([Role(rc["role"])] * rc["count"])
-        
+
         import random
         random.shuffle(all_roles)
         random.shuffle(personalities)
-        
+
         for i in range(1, player_count + 1):
             player = Player(
                 id=i,
@@ -51,13 +55,23 @@ class GameEngine:
                 is_human=(i == human_player_id),
                 is_bot=(i != human_player_id),
             )
+            # 根据人格分配名人名字
+            personality_key = player.personality or "passive"
+            celebrity_name = self.name_generator.assign_name_to_player(i, personality_key)
+            player.celebrity_name = celebrity_name
+            
             self.state.players[i] = player
-        
+
+        # 设置 UI 的游戏状态（用于上帝视角显示身份）
+        if hasattr(self.ui, "set_game_state"):
+            self.ui.set_game_state(self.state, human_player_id)
+
         self._init_log()
         self.state.add_history("game_setup", {
             "player_count": player_count,
             "human_player_id": human_player_id,
             "roles": [r.value for r in all_roles],
+            "celebrity_names": {str(k): v.celebrity_name for k, v in self.state.players.items()},
         })
     
     def _init_log(self) -> None:
@@ -146,22 +160,24 @@ class GameEngine:
     def _handle_werewolf_action(self) -> dict:
         """处理狼人行动 - 狼人可以交流"""
         alive_villagers = [p.id for p in self.state.get_alive_players() if p.role != Role.WEREWOLF]
-        
+
         if not alive_villagers:
             return {}
-        
+
         # 收集所有狼人的选择
         werewolves = self.state.get_alive_werewolves()
         targets = []
-        
+        wolf_thoughts = []  # 记录狼人内心活动
+
         for wolf in werewolves:
             # 告诉狼人队友是谁
             teammate_ids = [w.id for w in werewolves if w.id != wolf.id]
-            
+
             if wolf.is_human:
                 target = self.ui.get_player_input(f"请选择袭击目标 {alive_villagers}: ")
                 try:
                     targets.append(int(target))
+                    wolf_thoughts.append(f"{wolf.id}号 (狼人) 选择了 {target}号")
                 except ValueError:
                     targets.append(alive_villagers[0])
             else:
@@ -169,12 +185,28 @@ class GameEngine:
                 context = {
                     "alive_players": alive_villagers,
                     "wolf_teammates": teammate_ids,
+                    "my_id": wolf.id,  # 添加自己的号码
                 }
-                action = agent.decide_night_action(context)
-                targets.append(action.get("target", alive_villagers[0]))
-        
+                action, inner_thought = agent.decide_night_action(context)
+                target = action.get("target", alive_villagers[0])
+                targets.append(target)
+                
+                # 记录内心活动
+                wolf_thoughts.append(f"{wolf.id}号 ({wolf.celebrity_name}) 的内心：{inner_thought}")
+
+        # 显示狼人内心活动（上帝视角）
+        self.ui.display_system_message("=== 狼人行动（上帝视角） ===")
+        for thought in wolf_thoughts:
+            # 调试输出：显示内心活动
+            if thought:
+                self.ui.display_inner_thought("狼人", thought)
+            else:
+                # 如果内心活动为空，显示默认提示
+                self.ui.display_system_message("  [狼人内心] （思考中...）")
+
         if targets:
             target = max(set(targets), key=targets.count)
+            self.ui.display_system_message(f"狼人选择了袭击 {target}号玩家")
             return {"target": target}
         return {}
     
@@ -183,51 +215,62 @@ class GameEngine:
         seers = [p for p in self.state.get_alive_players() if p.role == Role.SEER]
         if not seers:
             return {}
-        
+
         seer = seers[0]
         alive_others = [p.id for p in self.state.get_alive_players() if p.id != seer.id]
-        
+        inner_thought = ""
+
         if seer.is_human:
             target = self.ui.get_player_input(f"请选择查验目标 {alive_others}: ")
             try:
                 target_id = int(target)
                 if target_id in alive_others:
-                    return {"target": target_id}
+                    inner_thought = f"{seer.id}号 (预言家) 选择了查验 {target_id}号"
+                    return {"target": target_id, "thought": inner_thought}
             except ValueError:
                 pass
         else:
             agent = self.agents[seer.id]
-            context = {"alive_players": alive_others}
-            action = agent.decide_night_action(context)
-            return action
-        
-        return {"target": alive_others[0]} if alive_others else {}
+            context = {
+                "alive_players": alive_others,
+                "my_id": seer.id,  # 添加自己的号码
+            }
+            action, inner_thought = agent.decide_night_action(context)
+            # 确保内心活动不为空
+            if not inner_thought:
+                inner_thought = "选择查验目标，希望能找到狼人"
+            inner_thought = f"{seer.id}号 ({seer.celebrity_name}) 的内心：{inner_thought}"
+            return {"target": action.get("target", alive_others[0]), "thought": inner_thought}
+
+        return {"target": alive_others[0] if alive_others else None, "thought": ""}
     
     def _handle_witch_action(self, dead_player_id: Optional[int]) -> dict:
         """处理女巫行动"""
         witches = [p for p in self.state.get_alive_players() if p.role == Role.WITCH]
         if not witches:
             return {}
-        
+
         witch = witches[0]
         alive_players = [p.id for p in self.state.get_alive_players()]
-        
         action = {}
-        
+        inner_thought = ""
+
         if witch.is_human:
             if dead_player_id and not self.witch_heal_used:
                 choice = self.ui.get_player_input(f"{dead_player_id}号死亡，是否使用解药？(y/n): ")
                 if choice.lower() == 'y':
                     action = {"action": "heal", "target": dead_player_id}
                     self.witch_heal_used = True
-            
-            if not self.witch_poison_used:
+                    inner_thought = f"{witch.id}号 (女巫) 的内心：使用了救药救了{dead_player_id}号"
+
+            if not self.witch_poison_used and not action:
                 choice = self.ui.get_player_input(f"是否使用毒药？(y/n): ")
                 if choice.lower() == 'y':
                     target = self.ui.get_player_input(f"选择毒杀目标 {alive_players}: ")
                     try:
                         action = {"action": "poison", "target": int(target)}
                         self.witch_poison_used = True
+                        inner_thought = f"{witch.id}号 (女巫) 的内心：使用了毒药毒杀{target}号"
                     except ValueError:
                         pass
         else:
@@ -235,33 +278,77 @@ class GameEngine:
             context = {
                 "alive_players": alive_players,
                 "dead_player": dead_player_id,
+                "my_id": witch.id,  # 添加自己的号码
+                "heal_used": self.witch_heal_used,  # 告知 AI 解药是否已用
+                "poison_used": self.witch_poison_used,  # 告知 AI 毒药是否已用
             }
-            action = agent.decide_night_action(context)
-            
+            action, inner_thought_raw = agent.decide_night_action(context)
+
+            # 确保内心活动不为空
+            if not inner_thought_raw:
+                inner_thought_raw = "决定是否使用药剂"
+
             if action.get("action") == "heal":
-                self.witch_heal_used = True
+                # 修复：检查解药是否已用
+                if self.witch_heal_used:
+                    self.ui.display_system_message("女巫试图使用解药，但解药已用过")
+                    action = {"action": "none"}
+                    inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：{inner_thought_raw}（但解药已用）"
+                else:
+                    self.witch_heal_used = True
+                    inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：{inner_thought_raw}"
             elif action.get("action") == "poison":
-                self.witch_poison_used = True
-        
+                # 修复：检查毒药是否已用
+                if self.witch_poison_used:
+                    self.ui.display_system_message("女巫试图使用毒药，但毒药已用过")
+                    action = {"action": "none"}
+                    inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：{inner_thought_raw}（但毒药已用）"
+                else:
+                    self.witch_poison_used = True
+                    inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：{inner_thought_raw}"
+            else:
+                inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：{inner_thought_raw}"
+
+        # 显示女巫内心活动（上帝视角）
+        if inner_thought:
+            self.ui.display_system_message("=== 女巫行动（上帝视角） ===")
+            self.ui.display_inner_thought("女巫", inner_thought)
+        else:
+            self.ui.display_system_message("=== 女巫行动（上帝视角） ===")
+            self.ui.display_system_message("  [女巫内心] （思考中...）")
+
         return action
     
-    def _process_night_results(self, wolf_action: dict, seer_action: dict, 
+    def _process_night_results(self, wolf_action: dict, seer_action: dict,
                                 witch_action: dict) -> list[int]:
         """处理夜晚结果"""
         night_deaths = []
-        
-        # 记录预言家查验结果
+
+        # 显示预言家内心活动和查验结果（上帝视角）
         if seer_action.get("target"):
             target_id = seer_action["target"]
             target = self.state.players.get(target_id)
             if target:
                 self.state.seer_check_target = target_id
                 self.state.seer_check_result = target.role
+
+                # 显示内心活动
+                thought = seer_action.get("thought", "")
+                self.ui.display_system_message("=== 预言家行动（上帝视角） ===")
+                if thought:
+                    self.ui.display_inner_thought("预言家", thought)
+                else:
+                    self.ui.display_system_message("  [预言家内心] （思考中...）")
+
+                # 显示查验结果
+                role_name = target.role.value if target.role else "未知"
+                self.ui.display_system_message(f"预言家查验了 {target_id}号，结果是：{role_name}")
+
                 self._log_event("seer_check", {
                     "target": target_id,
                     "result": target.role.value,
                 })
-        
+
         # 处理狼人袭击
         killed_by_wolf = None
         if wolf_action.get("target"):
@@ -269,40 +356,84 @@ class GameEngine:
             target = self.state.players.get(target_id)
             if target and target.is_alive:
                 killed_by_wolf = target_id
-        
+
         # 处理女巫行动
         saved = False
         poisoned = None
-        
+
         if witch_action.get("action") == "heal" and witch_action.get("target") == killed_by_wolf:
             saved = True
             self.ui.display_system_message("女巫使用了解药")
-        
+
         if witch_action.get("action") == "poison" and witch_action.get("target"):
             poisoned = witch_action["target"]
             self.ui.display_system_message("女巫使用了毒药")
-        
+
         # 应用死亡
         if killed_by_wolf and not saved:
             target = self.state.players[killed_by_wolf]
             target.is_alive = False
+            target.death_cause = "wolf"  # 记录死亡原因：狼刀
             night_deaths.append(killed_by_wolf)
             self.ui.display_system_message(f"{target.name} 在夜晚死亡")
+            
+            # 猎人技能 - 被狼刀死亡可以开枪
+            if target.role == Role.HUNTER:
+                self.ui.display_system_message(f"{target.name} 是猎人，被狼刀死亡，可以发动技能！")
+                self._handle_hunter_skill(target, alive_villagers)
+            
             self._log_event("night_death", {"player_id": killed_by_wolf, "role": target.role.value, "cause": "wolf"})
-        
+
         if poisoned:
             target = self.state.players[poisoned]
             if target.is_alive:
                 target.is_alive = False
+                target.death_cause = "poison"  # 记录死亡原因：毒药
                 night_deaths.append(poisoned)
                 self.ui.display_system_message(f"{target.name} 被毒杀")
+                
+                # 猎人技能 - 被毒死不能开枪
+                if target.role == Role.HUNTER:
+                    self.ui.display_system_message(f"{target.name} 是猎人，但被毒杀，不能发动技能")
+                
                 self._log_event("night_death", {"player_id": poisoned, "role": target.role.value, "cause": "poison"})
-        
+
         # 检查游戏是否结束
         self.state.check_game_over()
-        
+
         return night_deaths
     
+    def _handle_hunter_skill(self, hunter: Player, alive_players: list[int]) -> None:
+        """
+        处理猎人技能发动
+        
+        Args:
+            hunter: 猎人玩家对象
+            alive_players: 存活玩家 ID 列表（不包括猎人自己）
+        """
+        if hunter.is_human:
+            target = self.ui.get_player_input(f"选择带走一人 { [p for p in alive_players if p != hunter.id] }: ")
+            try:
+                target_id = int(target)
+                if target_id in [p for p in alive_players if p != hunter.id]:
+                    target_player = self.state.players[target_id]
+                    target_player.is_alive = False
+                    target_player.death_cause = "hunter"  # 记录死亡原因：猎人带走
+                    self.ui.display_system_message(f"{target_player.name} 被猎人带走了！")
+                    self._log_event("hunter_skill", {"hunter_id": hunter.id, "target": target_id})
+            except ValueError:
+                pass
+        else:
+            agent = self.agents[hunter.id]
+            context = {"alive_players": [p for p in alive_players if p != hunter.id]}
+            target = agent.hunter_skill(context)
+            if target:
+                target_player = self.state.players[target]
+                target_player.is_alive = False
+                target_player.death_cause = "hunter"  # 记录死亡原因：猎人带走
+                self.ui.display_system_message(f"{target_player.name} 被猎人带走了！")
+                self._log_event("hunter_skill", {"hunter_id": hunter.id, "target": target})
+
     def _run_day(self) -> None:
         """运行白天阶段 - 完整流程"""
         self.ui.notify_game_event("day_start", {"day": self.state.day_number})
@@ -381,11 +512,13 @@ class GameEngine:
                 agent = self.agents[pid]
                 context = {
                     "day_number": 1,
+                    "seer_check_target": None,  # 第 1 天没有查验
+                    "seer_check_result": None,
                     "previous_speeches": [],
                     "alive_players": [p.id for p in alive_players],
                 }
                 speech, inner_thought = agent.speak(context, round_num=1)
-                
+
                 # 记录竞选发言的内心独白
                 self._log_event("president_speech", {
                     "player_id": pid,
@@ -397,9 +530,10 @@ class GameEngine:
             speeches.append({"speaker": player.name, "player_id": pid, "content": speech})
 
         # 投票
-        self.ui.display_system_message("=== 警长投票 ===")
+        self.ui.display_system_message("=== 警长投票（上帝视角） ===")
         vote_counts = {}
         vote_details = {}
+        vote_thoughts = {}
 
         for voter in alive_players:
             if voter.id not in candidates:
@@ -410,21 +544,35 @@ class GameEngine:
                         if vote_target in candidates:
                             vote_counts[vote_target] = vote_counts.get(vote_target, 0) + 1
                             vote_details[voter.id] = vote_target
+                            vote_thoughts[voter.id] = f"{voter.id}号 (人类) 投票给 {vote_target}号"
                     except ValueError:
                         pass
                 else:
                     # AI 投票
                     agent = self.agents[voter.id]
-                    context = {"alive_players": candidates}
-                    vote = agent.vote(context)
+                    context = {
+                        "alive_players": candidates,
+                        "my_id": voter.id,
+                    }
+                    vote, inner_thought = agent.vote(context)
                     if vote and vote in candidates:
                         vote_counts[vote] = vote_counts.get(vote, 0) + 1
                         vote_details[voter.id] = vote
+                        vote_thoughts[voter.id] = f"{voter.id}号 ({voter.celebrity_name}-{voter.role.value}) 投票给 {vote}号：{inner_thought}"
+                    else:
+                        vote_thoughts[voter.id] = f"{voter.id}号 ({voter.celebrity_name}-{voter.role.value})：{inner_thought}"
+
+        # 显示警长投票内心活动
+        self.ui.display_system_message("--- 警长投票详情（上帝视角） ---")
+        for voter_id in sorted(vote_thoughts.keys()):
+            thought = vote_thoughts[voter_id]
+            self.ui.display_inner_thought(f"{voter_id}号", thought)
 
         # 记录投票详情
         self._log_event("president_vote", {
             "vote_counts": vote_counts,
             "vote_details": vote_details,
+            "vote_thoughts": vote_thoughts,
             "voters": [voter.id for voter in alive_players if voter.id not in candidates]
         })
 
@@ -455,13 +603,13 @@ class GameEngine:
         for round_num in range(1, rounds + 1):
             self.ui.display_system_message(f"=== 第{round_num}轮发言 ===")
             self.round_num = round_num
-            
+
             alive_players = self.state.get_alive_players()
             speeches = []
-            
+
             # 获取 AI 发言延迟
             ai_delay = self.config.get("game", {}).get("ai_speech_delay", 0.3)
-            
+
             # 按顺序发言
             for player in sorted(alive_players, key=lambda p: p.id):
                 if player.is_human:
@@ -472,21 +620,22 @@ class GameEngine:
                     context = {
                         "day_number": self.state.day_number,
                         "night_deaths": [],  # 夜晚死亡已在之前公布
-                        "seer_result": self.state.seer_check_result,
+                        "seer_check_target": self.state.seer_check_target,  # 修复：传递查验目标
+                        "seer_check_result": self.state.seer_check_result,  # 修复：传递查验结果
                         "previous_speeches": speeches,
                         "alive_players": [p.id for p in alive_players],
                     }
                     speech, inner_thought = agent.speak(context, round_num=round_num)
-                    
+
                     self._log_event("inner_thought", {
                         "player_id": player.id,
                         "thought": inner_thought,
                         "round": round_num,
                     })
-                    
+
                     if ai_delay > 0:
                         time.sleep(ai_delay)
-                
+
                 self.ui.display_message(player.name, speech)
                 speeches.append({
                     "speaker": player.name,
@@ -545,13 +694,17 @@ class GameEngine:
         return f"我是{role_str}，怀疑{suspect_str}，信任{trust_str}。"
     
     def _run_vote(self) -> None:
-        """运行投票阶段"""
+        """运行投票阶段 - 展示内心活动"""
         self.state.phase = Phase.DAY_VOTE
         self.ui.notify_game_event("vote_result", {})
 
         alive_players = self.state.get_alive_players()
         vote_counts = {}
         vote_details = {}
+        vote_thoughts = {}  # 记录每个玩家的投票内心活动
+
+        # 显示投票开始
+        self.ui.display_system_message("=== 投票阶段（上帝视角） ===")
 
         # 收集投票
         for player in alive_players:
@@ -559,84 +712,89 @@ class GameEngine:
                 vote = self.ui.get_player_input(f"请{player.name}投票（输入玩家编号或 skip 弃票）: ")
                 if vote.lower() == "skip":
                     vote_details[player.id] = None
+                    vote_thoughts[player.id] = f"{player.id}号 (人类) 选择了弃权"
                     continue
                 try:
                     vote_target = int(vote)
                     if vote_target in [p.id for p in alive_players]:
                         vote_counts[vote_target] = vote_counts.get(vote_target, 0) + 1
                         vote_details[player.id] = vote_target
+                        vote_thoughts[player.id] = f"{player.id}号 (人类) 投票给 {vote_target}号"
                 except ValueError:
                     vote_details[player.id] = None
+                    vote_thoughts[player.id] = f"{player.id}号 (人类) 无效投票"
             else:
                 agent = self.agents[player.id]
                 context = {
                     "alive_players": [p.id for p in alive_players],
+                    "my_id": player.id,  # 添加自己的号码
+                    "previous_speeches": [],  # 可以传入完整发言历史
                 }
-                vote = agent.vote(context)
+                vote, inner_thought = agent.vote(context)
+                
                 if vote:
                     vote_counts[vote] = vote_counts.get(vote, 0) + 1
                     vote_details[player.id] = vote
+                    vote_thoughts[player.id] = f"{player.id}号 ({player.celebrity_name}-{player.role.value}) 投票给 {vote}号：{inner_thought}"
                 else:
                     vote_details[player.id] = None
+                    vote_thoughts[player.id] = f"{player.id}号 ({player.celebrity_name}-{player.role.value})：{inner_thought}"
 
         self.state.vote_counts = vote_counts
+
+        # 显示所有玩家的投票内心活动（上帝视角）
+        self.ui.display_system_message("--- 投票详情（上帝视角） ---")
+        for voter_id in sorted(vote_thoughts.keys()):
+            thought = vote_thoughts[voter_id]
+            self.ui.display_inner_thought(f"{voter_id}号", thought)
 
         # 记录投票详情
         self._log_event("day_vote", {
             "day": self.state.day_number,
             "vote_counts": vote_counts,
             "vote_details": vote_details,
+            "vote_thoughts": vote_thoughts,  # 记录内心活动
             "alive_players": [p.id for p in alive_players],
         })
-        
+
         # 公布结果
         if vote_counts:
             max_votes = max(vote_counts.values())
             top_candidates = [k for k, v in vote_counts.items() if v == max_votes]
-            
+
             if len(top_candidates) == 1:
                 eliminated_id = top_candidates[0]
                 eliminated = self.state.players[eliminated_id]
-                
+
                 # 发表遗言
-                self.ui.display_system_message(f"{eliminated.name} 被放逐，请留遗言：")
+                self.ui.display_system_message(f"\n{eliminated.name} 被放逐，请留遗言：")
                 if eliminated.is_human:
                     last_words = self.ui.get_player_input("请留遗言：")
                 else:
                     agent = self.agents[eliminated_id]
                     context = {
                         "alive_players": [p.id for p in alive_players if p.id != eliminated_id],
+                        "death_cause": "voted_out",  # 被投票出局
                     }
                     last_words = agent.make_last_words(context)
-                
+
                 self.ui.display_message(eliminated.name, f"[遗言] {last_words}")
                 self._log_event("last_words", {"player_id": eliminated_id, "words": last_words})
-                
-                # 猎人技能
+
+                # 猎人技能 - 修复：只有被狼刀死亡才能开枪，被投票出局不能开枪
+                # 这里是被投票出局，所以不能发动猎人技能
                 if eliminated.role == Role.HUNTER:
-                    self.ui.display_system_message(f"{eliminated.name} 是猎人，可以发动技能！")
-                    if eliminated.is_human:
-                        target = self.ui.get_player_input(f"选择带走一人 { [p.id for p in alive_players if p.id != eliminated_id] }: ")
-                        try:
-                            target_id = int(target)
-                            if target_id in [p.id for p in alive_players if p.id != eliminated_id]:
-                                target_player = self.state.players[target_id]
-                                target_player.is_alive = False
-                                self.ui.display_system_message(f"{target_player.name} 被猎人带走了！")
-                                self._log_event("hunter_skill", {"hunter_id": eliminated_id, "target": target_id})
-                        except ValueError:
-                            pass
-                    else:
-                        agent = self.agents[eliminated_id]
-                        context = {"alive_players": [p.id for p in alive_players if p.id != eliminated_id]}
-                        target = agent.hunter_skill(context)
-                        if target:
-                            target_player = self.state.players[target]
-                            target_player.is_alive = False
-                            self.ui.display_system_message(f"{target_player.name} 被猎人带走了！")
-                            self._log_event("hunter_skill", {"hunter_id": eliminated_id, "target": target})
-                
+                    self.ui.display_system_message(f"{eliminated.name} 是猎人，但被投票出局，不能发动技能")
+                    # 记录猎人被放逐
+                    self._log_event("hunter_eliminated", {
+                        "hunter_id": eliminated_id,
+                        "reason": "voted_out",
+                        "note": "猎人被投票出局，不能发动技能"
+                    })
+
                 eliminated.is_alive = False
+                # 记录死亡原因
+                eliminated.death_cause = "voted_out"  # 被投票出局
                 self.ui.display_message("系统", f"{eliminated.name} 被放逐了！")
                 self.ui.notify_game_event("player_eliminated", {
                     "player_id": eliminated_id,

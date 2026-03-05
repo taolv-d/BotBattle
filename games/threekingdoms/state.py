@@ -161,6 +161,7 @@ class ThreeKingdomsPlayer:
     name: str
     general: str                # 武将名
     role: Role                  # 身份
+    celebrity_name: str = ""       # 名人名字
     hp: int = 4                 # 当前体力
     max_hp: int = 4             # 体力上限
     hand_cards: list[Card] = field(default_factory=list)  # 手牌列表
@@ -169,14 +170,20 @@ class ThreeKingdomsPlayer:
     is_alive: bool = True
     skill_state: dict = field(default_factory=dict)  # 技能状态
     slash_count: int = 0        # 本回合已出杀次数
-    
+
+    def get_display_name(self, show_celebrity: bool = True) -> str:
+        """获取显示名字"""
+        if show_celebrity and self.celebrity_name:
+            return f"{self.name}({self.celebrity_name})"
+        return self.name
+
     def to_dict(self, reveal_all: bool = False) -> dict:
         """
         转换为字典
-        
+
         Args:
             reveal_all: 是否公开所有信息（上帝视角）
-        
+
         Returns:
             玩家状态字典
         """
@@ -184,6 +191,7 @@ class ThreeKingdomsPlayer:
             return {
                 "id": self.id,
                 "name": self.name,
+                "celebrity_name": self.celebrity_name,
                 "general": self.general,
                 "role": self.role.value,
                 "hp": self.hp,
@@ -200,6 +208,7 @@ class ThreeKingdomsPlayer:
             return {
                 "id": self.id,
                 "name": self.name,
+                "celebrity_name": self.celebrity_name,
                 "general": self.general,
                 "hp": self.hp,
                 "max_hp": self.max_hp,

@@ -54,7 +54,8 @@ def main():
     print(f"[OK] 已加载 {len(personality_mgr.personalities)} 种人格")
     
     # 创建 UI
-    ui = CLI(show_inner_thoughts=False)  # 默认不显示内心独白
+    # god_view=True 开启上帝视角（观察模式显示所有身份，玩家模式只显示自己身份）
+    ui = CLI(show_inner_thoughts=False, god_view=True)  # 默认不显示内心独白
     
     # 选择游戏模式
     is_human_mode, human_player_id = ui.select_player_mode()

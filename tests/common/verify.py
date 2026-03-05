@@ -2,7 +2,8 @@
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+# 添加项目根目录到路径
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 print("=" * 50)
 print("BotBattle 代码验证")
@@ -85,7 +86,7 @@ except Exception as e:
 # 7. 验证 SDD 文档
 print("\n[7] 验证 SDD 文档...")
 try:
-    sdd_file = Path("SDD.md")
+    sdd_file = Path("docs/SDD.md")
     assert sdd_file.exists()
     content = sdd_file.read_text(encoding='utf-8')
     assert "Specification-Driven Development" in content or "规范驱动开发" in content

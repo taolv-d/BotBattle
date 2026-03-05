@@ -1,21 +1,70 @@
 """三国杀全局看板 UI"""
-from typing import Optional, Any
+from typing import Optional, Any, TYPE_CHECKING
 from ui.base import UIBase
+
+if TYPE_CHECKING:
+    from games.threekingdoms.state import ThreeKingdomsPlayer
 
 
 class ThreeKingdomsCLI(UIBase):
     """三国杀命令行界面 - 带全局看板"""
-    
-    def __init__(self, show_inner_thoughts: bool = False):
+
+    def __init__(self, show_inner_thoughts: bool = False, god_view: bool = True):
         """
         Args:
             show_inner_thoughts: 是否显示内心独白
+            god_view: 是否开启上帝视角
         """
         self.show_inner_thoughts = show_inner_thoughts
+        self.god_view = god_view
         self.thought_history: list[dict] = []  # AI 思考历史
-    
+        self.game_state = None
+        self.human_player_id: Optional[int] = None
+
+    def set_game_state(self, players: dict, human_player_id: Optional[int] = None) -> None:
+        """设置游戏状态"""
+        self.game_state = players
+        self.human_player_id = human_player_id
+
+    def _format_speaker_name(self, speaker: str) -> str:
+        """格式化发言者名字（添加名人名字和身份）"""
+        if not self.game_state:
+            return speaker
+        
+        try:
+            player_id = int(speaker.split("号")[0])
+            player = self.game_state.get(player_id)
+            
+            if not player:
+                return speaker
+            
+            # 构建名字
+            celebrity_name = getattr(player, 'celebrity_name', '')
+            if celebrity_name:
+                name_with_celebrity = f"{player.name}({celebrity_name})"
+            else:
+                name_with_celebrity = player.name
+            
+            # 上帝视角显示身份
+            if self.god_view:
+                if self.human_player_id is not None and player_id != self.human_player_id:
+                    return name_with_celebrity
+                
+                role = getattr(player, 'role', None)
+                if role:
+                    role_name = role.value if hasattr(role, 'value') else str(role)
+                    return f"{name_with_celebrity}-{role_name}"
+            
+            return name_with_celebrity
+            
+        except (ValueError, IndexError, AttributeError):
+            pass
+        
+        return speaker
+
     def display_message(self, speaker: str, message: str) -> None:
-        print(f"\n[{speaker}] {message}")
+        display_name = self._format_speaker_name(speaker)
+        print(f"\n[{display_name}] {message}")
     
     def display_inner_thought(self, speaker: str, thought: str) -> None:
         """内心独白写入日志，终端默认不显示"""
