@@ -1,0 +1,38 @@
+{
+  "llm": {
+    "provider": "deepseek",
+    "api_key": "YOUR_API_KEY",
+    "model": "deepseek-chat",
+    "base_url": "https://api.deepseek.com/v1",
+    "temperature": 0.7,
+    "timeout": 180,
+    "retry_count": 5,
+    "retry_delay": 3,
+    "_comment": "=== 可选配置示例（取消注释使用）===",
+    "_kimi_fast": {
+      "_note": "Kimi - 速度快，适合短文本",
+      "provider": "kimi",
+      "api_key": "YOUR_KIMI_KEY",
+      "model": "moonshot-v1-8k",
+      "base_url": "https://api.moonshot.cn/v1"
+    },
+    "_aliyun_fast": {
+      "_note": "通义千问 - 国内速度快",
+      "provider": "aliyun",
+      "api_key": "YOUR_DASHSCOPE_KEY",
+      "model": "qwen-turbo",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    }
+  },
+  "game": {
+    "default_player_count": 9,
+    "max_player_count": 15,
+    "speech_timeout": 60,
+    "ai_speech_delay": 0.5
+  },
+  "log": {
+    "save_dir": "logs",
+    "save_inner_thoughts": true,
+    "verbose": false
+  }
+}

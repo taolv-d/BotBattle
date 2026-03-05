@@ -1,0 +1,20 @@
+{
+  "name": "标准 9 人局",
+  "player_count": 9,
+  "roles": [
+    {"role": "werewolf", "count": 3},
+    {"role": "villager", "count": 3},
+    {"role": "seer", "count": 1},
+    {"role": "witch", "count": 1},
+    {"role": "hunter", "count": 1}
+  ],
+  "personalities": [
+    "honest", "liar", "smooth", "cold", "chatterbox", "aggressive", "passive"
+  ],
+  "game_rules": {
+    "discussion_rounds": 2,
+    "has_president_election": true,
+    "has_last_words": true,
+    "hunter_can_skill": true
+  }
+}
