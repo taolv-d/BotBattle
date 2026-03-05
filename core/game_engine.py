@@ -188,9 +188,15 @@ class GameEngine:
                     "my_id": wolf.id,  # 添加自己的号码
                 }
                 action, inner_thought = agent.decide_night_action(context)
-                target = action.get("target", alive_villagers[0])
+                # 修复 P0-2: 验证 AI 返回的目标是否存活且不是狼人
+                target = action.get("target")
+                if target is None or target not in alive_villagers:
+                    # AI 返回了无效目标（可能是死亡玩家或狼人），从存活村民中随机选择
+                    import random
+                    target = random.choice(alive_villagers) if alive_villagers else None
+                    inner_thought = f"AI 返回了无效目标，已重新选择 {target}号"
                 targets.append(target)
-                
+
                 # 记录内心活动
                 wolf_thoughts.append(f"{wolf.id}号 ({wolf.celebrity_name}) 的内心：{inner_thought}")
 
@@ -217,6 +223,7 @@ class GameEngine:
             return {}
 
         seer = seers[0]
+        # 修复 P0-1: 确保只从存活玩家中选择查验目标
         alive_others = [p.id for p in self.state.get_alive_players() if p.id != seer.id]
         inner_thought = ""
 
@@ -236,11 +243,19 @@ class GameEngine:
                 "my_id": seer.id,  # 添加自己的号码
             }
             action, inner_thought = agent.decide_night_action(context)
+            # 修复 P0-1: 验证 AI 返回的目标是否存活，如果不存活则重新选择
+            target = action.get("target")
+            if target is None or target not in alive_others:
+                # AI 返回了无效目标（可能是死亡玩家），从存活玩家中随机选择
+                import random
+                target = random.choice(alive_others) if alive_others else None
+                inner_thought = f"AI 返回了无效目标，已重新选择 {target}号"
+            
             # 确保内心活动不为空
             if not inner_thought:
                 inner_thought = "选择查验目标，希望能找到狼人"
             inner_thought = f"{seer.id}号 ({seer.celebrity_name}) 的内心：{inner_thought}"
-            return {"target": action.get("target", alive_others[0]), "thought": inner_thought}
+            return {"target": target, "thought": inner_thought}
 
         return {"target": alive_others[0] if alive_others else None, "thought": ""}
     
