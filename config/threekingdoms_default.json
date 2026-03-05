@@ -1,0 +1,27 @@
+{
+  "name": "三国杀标准局",
+  "player_count": 5,
+  "mode": "3k",
+  "roles": [
+    {"role": "主公", "count": 1},
+    {"role": "忠臣", "count": 1},
+    {"role": "反贼", "count": 2},
+    {"role": "内奸", "count": 1}
+  ],
+  "generals": [
+    "曹操", "刘备", "关羽", "张飞", "诸葛亮",
+    "司马懿", "华佗", "吕布", "貂蝉", "周瑜",
+    "孙权", "陆逊", "赵云", "马超", "黄忠"
+  ],
+  "general_select_mode": "random_3_pick_1",
+  "identity_reveal_on_death": true,
+  "game_rules": {
+    "initial_hand": 4,
+    "draw_count": 2,
+    "has_equipment": true,
+    "has_delayed_trick": true,
+    "distance_calculation": "full",
+    "dying_request_peach": true,
+    "victory_condition": "simplified"
+  }
+}
