@@ -14,6 +14,7 @@ from .state import (
 )
 from ui.base import UIBase
 from ai.names import NameGenerator
+from ai.llm_client import LLMClient
 
 
 # 标准牌堆定义
@@ -196,6 +197,33 @@ class ThreeKingdomsEngine:
                     player.skill_state[f"skill_{skill.value}_active"] = True
             # 分配名人名字（使用默认人格"passive"）
             player.celebrity_name = self.name_generator.assign_name_to_player(i, "passive")
+            
+            # === 修复：初始化 AI agent ===
+            if i != human_player_id:  # AI 玩家
+                from games.threekingdoms.agent import ThreeKingdomsAgent
+                from ai.personality import Personality
+                
+                # 使用默认人格
+                try:
+                    personality = Personality({
+                        "name": "passive",
+                        "description": "被动型人格",
+                        "traits": ["理性"],
+                        "speech_style": {"min_length": 10, "max_length": 50, "tone": "中性"}
+                    })
+                    # 使用配置的 LLM
+                    llm_client = LLMClient(self.config) if self.config else None
+                    player.agent = ThreeKingdomsAgent(
+                        player_id=i,
+                        general=selected_general,
+                        role=role.value,
+                        personality=personality,
+                        llm_client=llm_client
+                    )
+                except Exception as e:
+                    print(f"[WARN] 创建 AI agent 失败：{e}，使用规则逻辑")
+                    player.agent = None
+            
             self.players[i] = player
 
         # 创建牌堆
@@ -261,11 +289,11 @@ class ThreeKingdomsEngine:
         # 游戏主循环
         while not self._check_game_over():
             self._run_turn()
-        
+
         # 游戏结束
         self._end_game()
-    
-    def _run_turn(self, player: ThreeKingdomsPlayer) -> None:
+
+    def _run_turn(self) -> None:
         """运行一个回合"""
         player = self.players[self.current_player_id]
 
@@ -1071,11 +1099,11 @@ class ThreeKingdomsEngine:
         
         target = random.choice(targets)
         self.ui.display_system_message(f"{source.name} 对{target.name} 使用决斗")
-        
+
         # 简化决斗：双方轮流出杀，先不出杀者掉血
         source_slash = next((c for c in source.hand_cards if isinstance(c, BasicCard) and c.subtype == BasicType.SLASH), None)
         target_slash = next((c for c in target.hand_cards if isinstance(c, BasicCard) and c.subtype == BasicType.SLASH), None)
-        
+
         if source_slash and target_slash:
             # 都有杀，各打五十大板（简化）
             source.hand_cards.remove(source_slash)
@@ -1083,20 +1111,20 @@ class ThreeKingdomsEngine:
             self.discard_pile.append(source_slash)
             self.discard_pile.append(target_slash)
             self.ui.display_system_message("双方都出了杀，决斗平局")
-        elif target_slash:
+        elif not source_slash and target_slash:
             # 源没有杀，源掉血
-            source.hand_cards.remove(target_slash)
+            target.hand_cards.remove(target_slash)
             self.discard_pile.append(target_slash)
             self._deal_damage(source=target, target=source, damage=1)
             self.ui.display_system_message(f"{source.name} 没有杀，受到 1 点伤害")
         else:
-            # 目标没有杀，目标掉血
-            if target_slash:
-                target.hand_cards.remove(target_slash)
-                self.discard_pile.append(target_slash)
+            # 目标没有杀，目标掉血（源出杀）
+            if source_slash:
+                source.hand_cards.remove(source_slash)
+                self.discard_pile.append(source_slash)
             self._deal_damage(source=source, target=target, damage=1)
             self.ui.display_system_message(f"{target.name} 没有杀，受到 1 点伤害")
-        
+
         self._log_event("trick_result", {
             "card": "决斗",
             "target": target.id,
@@ -1227,6 +1255,58 @@ class ThreeKingdomsEngine:
             "player_id": player.id,
             "general": player.general,
             "skill": "闭月",
+        })
+
+    def _skill_sunquan_zhi(self, player: ThreeKingdomsPlayer, cards_to_discard: list) -> None:
+        """
+        孙权制衡技能
+        弃置手牌，然后摸等量的牌
+        """
+        discard_count = len(cards_to_discard)
+        if discard_count == 0:
+            return
+        
+        # 弃牌
+        for card in cards_to_discard:
+            if card in player.hand_cards:
+                player.hand_cards.remove(card)
+                self.discard_pile.append(card)
+        
+        self.ui.display_system_message(f"{player.name}({player.general}) 发动制衡，弃置{discard_count}张牌")
+        
+        # 摸等量的牌
+        self._draw_cards(player, discard_count)
+        self.ui.display_system_message(f"{player.name} 摸了{discard_count}张牌")
+        
+        self._log_event("skill_triggered", {
+            "player_id": player.id,
+            "general": player.general,
+            "skill": "制衡",
+            "discarded": [c.name for c in cards_to_discard],
+        })
+
+    def _skill_huanggai_ku(self, player: ThreeKingdomsPlayer) -> None:
+        """
+        黄盖苦肉技能
+        自减 1 点体力，然后摸 2 张牌
+        """
+        if player.hp <= 1:
+            self.ui.display_system_message(f"{player.name}({player.general}) 体力不足，无法发动苦肉")
+            return
+        
+        # 自减体力
+        player.hp -= 1
+        self.ui.display_system_message(f"{player.name}({player.general}) 发动苦肉，自减 1 点体力，当前体力{player.hp}")
+        
+        # 摸 2 张牌
+        self._draw_cards(player, 2)
+        self.ui.display_system_message(f"{player.name} 摸了 2 张牌")
+        
+        self._log_event("skill_triggered", {
+            "player_id": player.id,
+            "general": player.general,
+            "skill": "苦肉",
+            "hp_after": player.hp,
         })
 
     def _check_zhige(self, target: ThreeKingdomsPlayer) -> bool:

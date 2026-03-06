@@ -231,6 +231,7 @@ class ThreeKingdomsPlayer:
     is_alive: bool = True
     is_human: bool = False      # 是否人类玩家
     is_bot: bool = True         # 是否 AI 玩家
+    agent: Optional[object] = None  # AI 代理（可选）
     skill_state: dict = field(default_factory=dict)  # 技能状态
     slash_count: int = 0        # 本回合已出杀次数
 
