@@ -226,6 +226,9 @@ class GameEngine:
         # 修复 P0-1: 确保只从存活玩家中选择查验目标
         alive_others = [p.id for p in self.state.get_alive_players() if p.id != seer.id]
         inner_thought = ""
+        
+        # 修复 Bug 2: 获取已查验玩家列表
+        checked_players = getattr(self.state, 'seer_checked_players', [])
 
         if seer.is_human:
             target = self.ui.get_player_input(f"请选择查验目标 {alive_others}: ")
@@ -233,6 +236,10 @@ class GameEngine:
                 target_id = int(target)
                 if target_id in alive_others:
                     inner_thought = f"{seer.id}号 (预言家) 选择了查验 {target_id}号"
+                    # 记录已查验玩家
+                    if target_id not in checked_players:
+                        checked_players.append(target_id)
+                        self.state.seer_checked_players = checked_players
                     return {"target": target_id, "thought": inner_thought}
             except ValueError:
                 pass
@@ -241,6 +248,7 @@ class GameEngine:
             context = {
                 "alive_players": alive_others,
                 "my_id": seer.id,  # 添加自己的号码
+                "checked_players": checked_players,  # 传递已查验玩家列表
             }
             action, inner_thought = agent.decide_night_action(context)
             # 修复 P0-1: 验证 AI 返回的目标是否存活，如果不存活则重新选择
@@ -251,6 +259,19 @@ class GameEngine:
                 target = random.choice(alive_others) if alive_others else None
                 inner_thought = f"AI 返回了无效目标，已重新选择 {target}号"
             
+            # 修复 Bug 2: 如果 AI 返回了已查验的玩家，重新选择
+            if target in checked_players:
+                import random
+                valid_targets = [p for p in alive_others if p not in checked_players]
+                if valid_targets:
+                    target = random.choice(valid_targets)
+                    inner_thought = f"AI 返回了已查验玩家，已重新选择 {target}号"
+            
+            # 记录已查验玩家
+            if target and target not in checked_players:
+                checked_players.append(target)
+                self.state.seer_checked_players = checked_players
+
             # 确保内心活动不为空
             if not inner_thought:
                 inner_thought = "选择查验目标，希望能找到狼人"
@@ -546,10 +567,17 @@ class GameEngine:
                 if choice.lower() == 'y':
                     candidates.append(player.id)
             else:
-                # AI 随机决定是否参选（50% 概率）
+                # 修复 Bug 3: 提高 AI 参选概率（70%），确保有足够候选人
                 import random
-                if random.random() > 0.5:
+                if random.random() > 0.3:  # 70% 概率参选
                     candidates.append(player.id)
+
+        # 修复 Bug 3: 如果无人参选，强制随机选择 2-3 名 AI 参选
+        if not candidates:
+            import random
+            forced_candidates = random.sample([p.id for p in alive_players], min(3, len(alive_players)))
+            candidates = forced_candidates
+            self.ui.display_system_message(f"无人自愿竞选，以下玩家被强制参选：{', '.join([f'{p}号' for p in candidates])}")
 
         # 记录参选玩家
         self._log_event("president_candidates", {
@@ -617,12 +645,15 @@ class GameEngine:
                         "my_id": voter.id,
                     }
                     vote, inner_thought = agent.vote(context)
-                    if vote and vote in candidates:
-                        vote_counts[vote] = vote_counts.get(vote, 0) + 1
-                        vote_details[voter.id] = vote
-                        vote_thoughts[voter.id] = f"{voter.id}号 ({voter.celebrity_name}-{voter.role.value}) 投票给 {vote}号：{inner_thought}"
-                    else:
-                        vote_thoughts[voter.id] = f"{voter.id}号 ({voter.celebrity_name}-{voter.role.value})：{inner_thought}"
+                    # 修复 Bug 3: 如果 AI 弃权，随机投票给一个候选人
+                    if vote is None or vote not in candidates:
+                        import random
+                        vote = random.choice(candidates)
+                        inner_thought = f"随机投票给 {vote}号"
+                    
+                    vote_counts[vote] = vote_counts.get(vote, 0) + 1
+                    vote_details[voter.id] = vote
+                    vote_thoughts[voter.id] = f"{voter.id}号 ({voter.celebrity_name}-{voter.role.value}) 投票给 {vote}号：{inner_thought}"
 
         # 显示警长投票内心活动
         self.ui.display_system_message("--- 警长投票详情（上帝视角） ---")
@@ -689,11 +720,13 @@ class GameEngine:
                     }
                     speech, inner_thought = agent.speak(context, round_num=round_num)
 
-                    self._log_event("inner_thought", {
-                        "player_id": player.id,
-                        "thought": inner_thought,
-                        "round": round_num,
-                    })
+                    # 修复 Bug 1: 只有存活玩家才记录内心独白
+                    if player.is_alive:
+                        self._log_event("inner_thought", {
+                            "player_id": player.id,
+                            "thought": inner_thought,
+                            "round": round_num,
+                        })
 
                     if ai_delay > 0:
                         time.sleep(ai_delay)

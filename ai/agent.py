@@ -331,16 +331,17 @@ class AIAgent:
     def decide_night_action(self, context: dict) -> tuple[dict, str]:
         """
         决定夜晚行动
-        
+
         Args:
             context: 当前情境
-            
+
         Returns:
             (行动决策，内心独白)
         """
         alive_players = context.get("alive_players", [])
         wolf_teammates = context.get("wolf_teammates", [])  # 狼人队友
         my_id = context.get("my_id", self.player.id)  # 自己的号码
+        checked_players = context.get("checked_players", [])  # 预言家已查验的玩家列表
 
         inner_thought = ""
 
@@ -349,18 +350,43 @@ class AIAgent:
             if wolf_teammates:
                 prompt = f"""你是{my_id}号玩家，身份是狼人，你的队友是{wolf_teammates}号。
 今晚要袭击一个玩家，可选择的 target：{alive_players}
-请返回 JSON 格式：{{"target": 玩家编号，"reason": "选择理由/内心想法"}}"""
+请返回 JSON 格式：{{"target": 玩家编号，"reason": "选择理由/内心想法"}}
+
+注意：
+- target 必须是 {alive_players} 中的一个数字
+- 不要选择你的狼人队友
+- 只返回 JSON，不要其他内容"""
             else:
                 prompt = f"""你是{my_id}号玩家，身份是狼人，请选择今晚要袭击的玩家编号。
 可选择的玩家：{alive_players}
-请返回 JSON 格式：{{"target": 玩家编号，"reason": "选择理由/内心想法"}}"""
-            
+请返回 JSON 格式：{{"target": 玩家编号，"reason": "选择理由/内心想法"}}
+
+注意：
+- target 必须是 {alive_players} 中的一个数字
+- 只返回 JSON，不要其他内容"""
+
             inner_thought_default = "选择袭击目标，尽量避开可疑的玩家"
-            
+
         elif self.player.role == Role.SEER:
-            prompt = f"""你是{my_id}号玩家，身份是预言家，请选择今晚要查验的玩家编号。
+            # 修复 Bug 2: 传递已查验玩家列表，避免重复查验
+            if checked_players:
+                prompt = f"""你是{my_id}号玩家，身份是预言家，请选择今晚要查验的玩家编号。
 可选择的玩家：{alive_players}
-请返回 JSON 格式：{{"target": 玩家编号，"reason": "选择理由/内心想法"}}"""
+你已经查验过的玩家：{checked_players}（不能再查验这些玩家）
+请返回 JSON 格式：{{"target": 玩家编号，"reason": "选择理由/内心想法"}}
+
+注意：
+- target 必须是 {alive_players} 中的一个数字
+- 不能查验已经查验过的玩家：{checked_players}
+- 只返回 JSON，不要其他内容"""
+            else:
+                prompt = f"""你是{my_id}号玩家，身份是预言家，请选择今晚要查验的玩家编号。
+可选择的玩家：{alive_players}
+请返回 JSON 格式：{{"target": 玩家编号，"reason": "选择理由/内心想法"}}
+
+注意：
+- target 必须是 {alive_players} 中的一个数字
+- 只返回 JSON，不要其他内容"""
             inner_thought_default = "选择查验目标，希望能找到狼人"
             
         elif self.player.role == Role.WITCH:
@@ -412,10 +438,10 @@ class AIAgent:
     def vote(self, context: dict) -> tuple[Optional[int], str]:
         """
         投票决定放逐谁
-        
+
         Args:
             context: 当前情境
-            
+
         Returns:
             (投票目标，内心独白)
         """
@@ -428,13 +454,17 @@ class AIAgent:
             for s in previous_speeches[-15:]
         ])
 
+        # 修复 Bug 4: 过滤掉已死亡的玩家
+        suspect_list_alive = [p for p in self.suspect_list if p in alive_players]
+        trust_list_alive = [p for p in self.trust_list if p in alive_players]
+
         suspect_hint = ""
-        if self.suspect_list:
-            suspect_hint = f"你怀疑的玩家：{', '.join([f'{p}号' for p in self.suspect_list])}。"
-        
+        if suspect_list_alive:
+            suspect_hint = f"你怀疑的玩家：{', '.join([f'{p}号' for p in suspect_list_alive])}。"
+
         trust_hint = ""
-        if self.trust_list:
-            trust_hint = f"你信任的玩家：{', '.join([f'{p}号' for p in self.trust_list])}。"
+        if trust_list_alive:
+            trust_hint = f"你信任的玩家：{', '.join([f'{p}号' for p in trust_list_alive])}。"
 
         prompt = f"""你是{my_id}号玩家，身份是{self.player.role.value if self.player.role else '玩家'}，请投票决定放逐谁。
 
@@ -447,7 +477,12 @@ class AIAgent:
 可投票的玩家：{alive_players}
 你可以选择弃票（返回 null）
 
-请返回 JSON 格式：{{"vote": 玩家编号 或 null, "reason": "投票理由/内心想法"}}"""
+请返回 JSON 格式：{{"vote": 玩家编号 或 null, "reason": "投票理由/内心想法"}}
+
+注意：
+- vote 必须是 {alive_players} 中的一个数字，或者 null 表示弃权
+- 不能投票给已死亡的玩家
+- 只返回 JSON，不要其他内容"""
 
         messages = [
             {"role": "system", "content": self._build_system_prompt()},
@@ -489,9 +524,10 @@ class AIAgent:
 
         # 根据身份和死亡原因生成不同的遗言提示
         role = self.player.role.value if self.player.role else "玩家"
-        
+        is_werewolf = role == "werewolf"
+
         if role == "hunter":
-            role_hint = f"""你是猎人，你的技能是死亡时可以带走一人（只有被狼刀才能发动）。
+            role_hint = """你是猎人，你的技能是死亡时可以带走一人（只有被狼刀才能发动）。
 遗言中不要提到"验人"、"查验"等预言家的能力。
 你可以说"我死后请好人帮我找出狼人"或"我怀疑 X 号是狼"。"""
         elif role == "seer":
@@ -500,10 +536,35 @@ class AIAgent:
         elif role == "witch":
             role_hint = """你是女巫，你有救药和毒药。
 遗言中可以说出你用了什么药，救了谁或毒了谁。"""
+        elif is_werewolf:
+            # 修复 Bug 5: 狼人遗言不能暴露身份
+            role_hint = """你是狼人，但绝对不能暴露身份！
+遗言中要假装自己是好人，可以说"我是村民"或"我是好人"。
+可以指出你怀疑的人（最好是真正的好人）。
+不要提到任何狼人相关的词汇。"""
         else:
             role_hint = "你是普通好人，没有特殊技能。"
 
-        prompt = f"""你即将死亡，请发表遗言。
+        # 修复 Bug 5: 狼人遗言提示
+        if is_werewolf:
+            prompt = f"""你即将死亡，请发表遗言。
+
+你的真实身份是狼人，但你必须假装是好人。
+
+存活玩家：{', '.join([f'{p}号' for p in alive_players])}
+之前的发言：
+{speech_history}
+
+遗言要求：
+1. **绝对不能暴露狼人身份**，要假装自己是村民或好人
+2. 可以指出你怀疑的人（选择真正的好人）
+3. 可以给"好人阵营"留下建议
+4. 长度 30-60 字
+5. 不要说任何暴露狼人身份的词汇
+
+请返回 JSON 格式：{{"speech": "遗言内容", "inner_thought": "内心想法（可以承认真实身份）"}}"""
+        else:
+            prompt = f"""你即将死亡，请发表遗言。
 
 你的身份：{role}
 {role_hint}
@@ -537,6 +598,8 @@ class AIAgent:
         except:
             pass
 
+        if is_werewolf:
+            return f"我是好人，希望大家能找到狼人。"
         return f"我是{role}，希望大家能找到狼人。"
     
     def hunter_skill(self, context: dict) -> Optional[int]:

@@ -69,7 +69,7 @@ class GameState:
     phase: Phase = Phase.NIGHT
     day_number: int = 0
     night_number: int = 0
-    
+
     # 夜晚行动结果
     werewolf_target: Optional[int] = None
     seer_check_target: Optional[int] = None
@@ -77,14 +77,17 @@ class GameState:
     witch_heal_target: Optional[int] = None
     witch_poison_target: Optional[int] = None
     
+    # 修复 Bug 2: 预言家已查验的玩家列表
+    seer_checked_players: list[int] = field(default_factory=list)
+
     # 投票结果
     vote_target: Optional[int] = None
     vote_counts: dict[int, int] = field(default_factory=dict)
-    
+
     # 游戏结束标志
     game_over: bool = False
     winner: Optional[str] = None  # "werewolf" or "villager"
-    
+
     # 历史记录（用于日志）
     history: list[dict] = field(default_factory=list)
     
