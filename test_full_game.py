@@ -8,6 +8,7 @@ from pathlib import Path
 # 修复 Windows 编码问题
 if sys.platform == 'win32':
     os.system('chcp 65001 >nul')
+    sys.stdout.reconfigure(encoding='utf-8')
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent))

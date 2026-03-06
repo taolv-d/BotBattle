@@ -275,6 +275,17 @@ class AIAgent:
             role_name = "好人" if seer_check_result.value == "villager" else "狼人"
             seer_info = f"\n【重要】你昨晚查验了 {seer_check_target}号，结果是：{role_name}。\n发言时可以根据情况决定是否透露这个信息。"
 
+        # 修复 P1-4: 增强村民找狼逻辑 - 添加找狼提示
+        villager_hint = ""
+        if not is_seer and not is_wolf:
+            villager_hint = """
+【找狼技巧】
+- 注意发言矛盾：前后不一致、逻辑混乱的玩家可能是狼人
+- 观察投票行为：弃票、跟票、投好人的玩家可疑
+- 听发言内容：划水、不分析、只踩一个人的可能是狼人
+- 注意保护预言家：如果有人跳预言家，分析他的查验是否合理
+"""
+
         # 构建情境提示（情感化要求）
         user_prompt = f"""【第{day}天白天 第{round_num}轮发言】
 
@@ -282,7 +293,7 @@ class AIAgent:
 存活玩家：{', '.join([f'{p}号' for p in alive_players])}
 {night_death_info}
 {seer_info}
-
+{villager_hint}
 {trust_hint}
 {memory_hint}
 
@@ -299,6 +310,7 @@ class AIAgent:
 7. 注意：你是{self.player.id}号玩家，发言时不要提到自己的号码（如"我 4 号认为"是错误的）
 8. **重要**：如果你是预言家，必须使用上面提供的查验结果，不要编造不存在的查验
 9. **重要**：不要引用不存在的"上局游戏"或"上次发言"，只根据当前游戏的发言历史
+10. **重要**：作为好人，要积极分析局势，找出狼人，不要划水
 
 【情感表达要求】
 - 使用口语化表达，加入"啊"、"吧"、"呢"、"我觉得"、"说实话"等语气词
@@ -545,22 +557,26 @@ class AIAgent:
         else:
             role_hint = "你是普通好人，没有特殊技能。"
 
-        # 修复 Bug 5: 狼人遗言提示
+        # 修复 P1-3: 狼人遗言不能暴露身份，需要更严格的提示
         if is_werewolf:
             prompt = f"""你即将死亡，请发表遗言。
 
-你的真实身份是狼人，但你必须假装是好人。
+【重要】你的真实身份是狼人，但你必须假装是好人！绝对不能暴露！
 
 存活玩家：{', '.join([f'{p}号' for p in alive_players])}
 之前的发言：
 {speech_history}
 
-遗言要求：
-1. **绝对不能暴露狼人身份**，要假装自己是村民或好人
-2. 可以指出你怀疑的人（选择真正的好人）
-3. 可以给"好人阵营"留下建议
-4. 长度 30-60 字
-5. 不要说任何暴露狼人身份的词汇
+【遗言要求】
+1. **绝对不能暴露狼人身份** - 不要说"狼人"、"狼队"、"队友"、"袭击"、"刀人"等词汇
+2. 要假装自己是村民或好人 - 可以说"我是好人"、"我是村民"
+3. 可以指出你怀疑的人（选择真正的好人，不要怀疑你的狼人队友）
+4. 可以给"好人阵营"留下建议
+5. 长度 30-60 字
+
+【示例遗言】
+- "我是好人，希望大家能找出真正的狼人。我怀疑 3 号，他的发言很奇怪。"
+- "我是村民，昨晚被刀了。希望大家能投出狼人，好人加油！"
 
 请返回 JSON 格式：{{"speech": "遗言内容", "inner_thought": "内心想法（可以承认真实身份）"}}"""
         else:
@@ -594,7 +610,19 @@ class AIAgent:
             end = content.rfind("}") + 1
             if start >= 0 and end > start:
                 result = json.loads(content[start:end])
-                return result.get("speech", content[:100])
+                speech = result.get("speech", content[:100])
+                
+                # 修复 P1-3: 验证狼人遗言是否暴露身份
+                if is_werewolf:
+                    forbidden_words = ["狼人", "狼队", "队友", "袭击", "刀人", "自爆", "投降"]
+                    for word in forbidden_words:
+                        if word in speech:
+                            # 如果包含禁止词汇，返回默认遗言
+                            print(f"[DEBUG] 狼人遗言包含禁止词汇'{word}'，已替换为默认遗言")
+                            speech = f"我是好人，希望大家能找出真正的狼人。我怀疑某个发言奇怪的玩家。"
+                            break
+                
+                return speech
         except:
             pass
 

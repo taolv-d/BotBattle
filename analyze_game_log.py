@@ -4,6 +4,10 @@ import sys
 from pathlib import Path
 from datetime import datetime
 
+# 修复 Windows 编码问题
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+
 def analyze_game_log(log_path: str) -> dict:
     """分析游戏日志，检测问题"""
     
