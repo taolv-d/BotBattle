@@ -298,12 +298,19 @@ class GameEngine:
                 "poison_used": self.witch_poison_used,  # 告知 AI 毒药是否已用
             }
             action, inner_thought_raw = agent.decide_night_action(context)
+            
+            # 调试日志：打印 AI 返回的 action
+            print(f"[DEBUG] 女巫 AI 返回 action: {action}")
+            print(f"[DEBUG] 女巫 AI 返回 inner_thought: {inner_thought_raw}")
 
             # 确保内心活动不为空
             if not inner_thought_raw:
                 inner_thought_raw = "决定是否使用药剂"
 
-            if action.get("action") == "heal":
+            # 修复：验证 action 格式，确保有 action 和 target 字段
+            action_type = action.get("action") if action else None
+            
+            if action_type == "heal":
                 # 修复：检查解药是否已用
                 if self.witch_heal_used:
                     self.ui.display_system_message("女巫试图使用解药，但解药已用过")
@@ -312,7 +319,7 @@ class GameEngine:
                 else:
                     self.witch_heal_used = True
                     inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：{inner_thought_raw}"
-            elif action.get("action") == "poison":
+            elif action_type == "poison":
                 # 修复：检查毒药是否已用
                 if self.witch_poison_used:
                     self.ui.display_system_message("女巫试图使用毒药，但毒药已用过")
@@ -322,7 +329,26 @@ class GameEngine:
                     self.witch_poison_used = True
                     inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：{inner_thought_raw}"
             else:
-                inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：{inner_thought_raw}"
+                # 修复：如果 AI 没有主动用药，添加默认行为
+                # 第一夜且有人死亡（通常是狼刀目标），自动使用解药自救
+                if dead_player_id and not self.witch_heal_used and self.state.night_number == 1:
+                    action = {"action": "heal", "target": dead_player_id}
+                    self.witch_heal_used = True
+                    inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：第一夜自救，使用解药救了{dead_player_id}号"
+                    print(f"[DEBUG] 女巫默认行为：第一夜自救")
+                # 后续夜晚，如果毒药未用，有一定概率使用毒药
+                elif not self.witch_poison_used and alive_players and len(alive_players) > 3:
+                    import random
+                    # 30% 概率使用毒药
+                    if random.random() < 0.3:
+                        # 选择一个可疑目标（简单策略：随机选择）
+                        poison_target = random.choice(alive_players)
+                        action = {"action": "poison", "target": poison_target}
+                        self.witch_poison_used = True
+                        inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：使用毒药毒杀{poison_target}号"
+                        print(f"[DEBUG] 女巫默认行为：使用毒药毒杀{poison_target}号")
+                else:
+                    inner_thought = f"{witch.id}号 ({witch.celebrity_name}) 的内心：{inner_thought_raw}"
 
         # 显示女巫内心活动（上帝视角）
         if inner_thought:
@@ -338,6 +364,9 @@ class GameEngine:
                                 witch_action: dict) -> list[int]:
         """处理夜晚结果"""
         night_deaths = []
+
+        # 获取存活玩家列表（用于猎人技能）
+        alive_villagers = [p.id for p in self.state.players.values() if p.is_alive and p.role != Role.WEREWOLF]
 
         # 显示预言家内心活动和查验结果（上帝视角）
         if seer_action.get("target"):
@@ -421,11 +450,14 @@ class GameEngine:
     def _handle_hunter_skill(self, hunter: Player, alive_players: list[int]) -> None:
         """
         处理猎人技能发动
-        
+
         Args:
             hunter: 猎人玩家对象
             alive_players: 存活玩家 ID 列表（不包括猎人自己）
         """
+        # 调试日志：猎人技能发动开始
+        print(f"[DEBUG] 猎人技能发动：猎人={hunter.id}号，存活玩家={alive_players}")
+        
         if hunter.is_human:
             target = self.ui.get_player_input(f"选择带走一人 { [p for p in alive_players if p != hunter.id] }: ")
             try:
@@ -436,18 +468,33 @@ class GameEngine:
                     target_player.death_cause = "hunter"  # 记录死亡原因：猎人带走
                     self.ui.display_system_message(f"{target_player.name} 被猎人带走了！")
                     self._log_event("hunter_skill", {"hunter_id": hunter.id, "target": target_id})
+                    print(f"[DEBUG] 猎人技能执行成功：带走了{target_id}号")
             except ValueError:
+                print(f"[DEBUG] 猎人技能：人类玩家输入无效")
                 pass
         else:
             agent = self.agents[hunter.id]
             context = {"alive_players": [p for p in alive_players if p != hunter.id]}
             target = agent.hunter_skill(context)
-            if target:
+            print(f"[DEBUG] 猎人 AI 返回目标：{target}")
+            
+            # 修复：如果 AI 返回 null 或无效目标，随机选择一个存活玩家
+            if target is None or target not in alive_players or target == hunter.id:
+                import random
+                valid_targets = [p for p in alive_players if p != hunter.id]
+                if valid_targets:
+                    target = random.choice(valid_targets)
+                    print(f"[DEBUG] 猎人 AI 返回无效目标，随机选择：{target}")
+            
+            if target is not None:
                 target_player = self.state.players[target]
                 target_player.is_alive = False
                 target_player.death_cause = "hunter"  # 记录死亡原因：猎人带走
                 self.ui.display_system_message(f"{target_player.name} 被猎人带走了！")
                 self._log_event("hunter_skill", {"hunter_id": hunter.id, "target": target})
+                print(f"[DEBUG] 猎人技能执行成功：带走了{target}号")
+            else:
+                print(f"[DEBUG] 猎人技能：没有可用目标")
 
     def _run_day(self) -> None:
         """运行白天阶段 - 完整流程"""

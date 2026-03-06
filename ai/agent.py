@@ -365,10 +365,26 @@ class AIAgent:
             
         elif self.player.role == Role.WITCH:
             dead_player = context.get("dead_player", None)
-            prompt = f"""你是{my_id}号玩家，身份是女巫，今晚有人死亡：{dead_player}号
-你可以使用解药救人，或使用毒药毒人。
-可选择的玩家：{alive_players}
-请返回 JSON 格式：{{"action": "heal/poison/none", "target": 玩家编号，"reason": "选择理由/内心想法"}}"""
+            heal_used = context.get("heal_used", False)
+            poison_used = context.get("poison_used", False)
+            prompt = f"""你是{my_id}号玩家，身份是女巫。
+你有一瓶解药（可以救人）和一瓶毒药（可以毒死人）。
+今晚死亡玩家：{dead_player}号
+解药已使用：{heal_used}
+毒药已使用：{poison_used}
+存活玩家：{alive_players}
+
+行动选项：
+1. 使用解药救人：{{"action": "heal", "target": {dead_player}, "reason": "救人理由"}}
+2. 使用毒药毒人：{{"action": "poison", "target": 玩家编号，"reason": "毒人理由"}}
+3. 不使用药剂：{{"action": "none", "reason": "不使用理由"}}
+
+注意：
+- 解药和毒药各只能使用一次
+- 第一夜如果被狼刀，建议自救
+- 返回必须是有效的 JSON 格式
+
+请返回你的决策："""
             inner_thought_default = "决定是否使用药剂"
         else:
             return {}, ""
