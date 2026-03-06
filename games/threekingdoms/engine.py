@@ -9,7 +9,8 @@ from typing import Optional
 from .state import (
     Card, BasicCard, TrickCard, EquipmentCard,
     Equipment, ThreeKingdomsPlayer, Role, Phase,
-    CardType, BasicType, TrickType, EquipmentType
+    CardType, BasicType, TrickType, EquipmentType,
+    GeneralSkill, STANDARD_GENERALS, General  # 添加武将相关导入
 )
 from ui.base import UIBase
 from ai.names import NameGenerator
@@ -179,7 +180,20 @@ class ThreeKingdomsEngine:
                 role=role,
                 hp=max_hp,
                 max_hp=max_hp,
+                position=i,  # 设置座位位置
+                is_human=(i == human_player_id),
+                is_bot=(i != human_player_id),
             )
+            # === 修复 P2-6: 初始化武将技能 ===
+            if selected_general in STANDARD_GENERALS:
+                general_info = STANDARD_GENERALS[selected_general]
+                player.skill_state["general"] = selected_general
+                player.skill_state["kingdom"] = general_info.kingdom
+                player.skill_state["skills"] = [s.value for s in general_info.skills]
+                # 初始化技能状态
+                for skill in general_info.skills:
+                    player.skill_state[f"skill_{skill.value}_used"] = False
+                    player.skill_state[f"skill_{skill.value}_active"] = True
             # 分配名人名字（使用默认人格"passive"）
             player.celebrity_name = self.name_generator.assign_name_to_player(i, "passive")
             self.players[i] = player
@@ -251,14 +265,14 @@ class ThreeKingdomsEngine:
         # 游戏结束
         self._end_game()
     
-    def _run_turn(self) -> None:
+    def _run_turn(self, player: ThreeKingdomsPlayer) -> None:
         """运行一个回合"""
         player = self.players[self.current_player_id]
-        
+
         if not player.is_alive:
             self._next_player()
             return
-        
+
         self.turn_count += 1
         self.ui.notify_game_event("turn_start", {
             "player_id": player.id,
@@ -269,33 +283,42 @@ class ThreeKingdomsEngine:
             "general": player.general,
             "hp": player.hp,
         })
-        
+
         # 重置状态
         player.slash_count = 0
-        
+        # === 修复 P2-6: 重置每回合技能状态 ===
+        for key in list(player.skill_state.keys()):
+            if key.endswith("_used"):
+                player.skill_state[key] = False
+
         # 1. 判定阶段
         self._phase_judge(player)
-        
+
         if not player.is_alive:
             self._next_player()
             return
-        
+
         # 2. 摸牌阶段
         self._phase_draw(player)
-        
+
         # 3. 出牌阶段
         self._phase_play(player)
-        
+
+        # === 修复 P2-6: 回合结束时触发技能（如貂蝉闭月） ===
+        self._trigger_end_turn_skill(player)
+
         # 4. 弃牌阶段
         self._phase_discard(player)
-        
+
         # 回合结束
         self._log_event("turn_end", {"player_id": player.id})
-        
+
         # 检查游戏是否结束
         if self._check_game_over():
+            # 显示获胜消息
+            self.ui.display_system_message(self._get_winner_message())
             return
-        
+
         # 下一个玩家
         self._next_player()
     
@@ -447,21 +470,59 @@ class ThreeKingdomsEngine:
             self._play_card(player, card_to_play)
     
     def _ai_play_phase(self, player: ThreeKingdomsPlayer) -> None:
-        """AI 玩家出牌阶段"""
-        # 简化 AI：有杀就出，有装备就装
+        """AI 玩家出牌阶段
+        修复 P2-4: 增加身份判断和战术决策
+        修复 P2-6: 支持武将技能
+        - 张飞咆哮：出杀无次数限制
+        - 黄盖苦肉：可以自减体力摸牌
+        - 孙权制衡：可以换牌
+        """
+        # === 修复 P2-6: 黄盖苦肉（优先） ===
+        if "ku" in player.skill_state.get("skills", []):
+            # 简化：黄盖 AI 有概率发动苦肉
+            import random
+            if player.hp > 2 and random.random() < 0.5:
+                self._trigger_huanggai_ku(player)
+        
+        # === 修复 P2-6: 孙权制衡（优先） ===
+        if "zhi" in player.skill_state.get("skills", []):
+            # 简化：孙权 AI 发动制衡弃掉废牌
+            if len(player.hand_cards) > 1:
+                # 弃掉一半手牌（简化策略）
+                cards_to_discard = player.hand_cards[:len(player.hand_cards)//2]
+                self._skill_sunquan_zhi(player, cards_to_discard)
+
+        # AI 自动出牌，有杀就出，有装备就装，有锦囊就用
         played = True
         while played and player.is_alive:
             played = False
+
+            # 1. 尝试使用锦囊牌（优先）
+            trick_card = self._find_usable_trick(player)
+            if trick_card:
+                player.hand_cards.remove(trick_card)
+                self._use_trick_card(player, trick_card)
+                self.discard_pile.append(trick_card)
+                played = True
+                self._update_game_board()
+                time.sleep(0.5)
+                continue
+
+            # 2. 尝试出杀（根据身份选择目标）
+            # === 修复 P2-6: 张飞咆哮 - 出杀无次数限制 ===
+            has_unlimited_slash = "pao" in player.skill_state.get("skills", [])
+            can_play_slash = has_unlimited_slash or player.slash_count == 0
             
-            # 尝试出杀
-            if player.slash_count == 0:
+            if can_play_slash:
                 slash = next((c for c in player.hand_cards if isinstance(c, BasicCard) and c.subtype == BasicType.SLASH), None)
                 if slash:
-                    target = self._find_attack_target(player)
-                    if target:
+                    # === 修复 P2-4: 根据身份选择攻击目标 ===
+                    target = self._find_attack_target_by_identity(player)
+                    if target and self._check_zhige(target):
                         player.hand_cards.remove(slash)
                         self.discard_pile.append(slash)
-                        player.slash_count += 1
+                        if not has_unlimited_slash:
+                            player.slash_count += 1
                         self._log_event("card_played", {
                             "player_id": player.id,
                             "card": slash.to_dict(),
@@ -471,23 +532,24 @@ class ThreeKingdomsEngine:
                         played = True
                         self._update_game_board()
                         time.sleep(0.5)
-            
-            # 尝试装备
-            if not played:
-                equip = next((c for c in player.hand_cards if isinstance(c, EquipmentCard)), None)
-                if equip:
-                    player.hand_cards.remove(equip)
-                    old = player.equipped.equip(equip)
-                    if old:
-                        self.discard_pile.append(old)
-                    self._log_event("card_played", {
-                        "player_id": player.id,
-                        "card": equip.to_dict(),
-                        "action": "equip",
-                    })
-                    played = True
-                    self._update_game_board()
-                    time.sleep(0.5)
+                        continue
+
+            # 3. 尝试装备
+            equip = next((c for c in player.hand_cards if isinstance(c, EquipmentCard)), None)
+            if equip:
+                player.hand_cards.remove(equip)
+                old = player.equipped.equip(equip)
+                if old:
+                    self.discard_pile.append(old)
+                self._log_event("card_played", {
+                    "player_id": player.id,
+                    "card": equip.to_dict(),
+                    "action": "equip",
+                })
+                self.ui.display_system_message(f"{player.name} 装备了{equip.name}")
+                played = True
+                self._update_game_board()
+                time.sleep(0.5)
     
     def _phase_discard(self, player: ThreeKingdomsPlayer) -> None:
         """弃牌阶段"""
@@ -551,7 +613,7 @@ class ThreeKingdomsEngine:
         """出牌"""
         player.hand_cards.remove(card)
         self.discard_pile.append(card)
-        
+
         if isinstance(card, BasicCard):
             if card.subtype == BasicType.SLASH:
                 target = self._find_attack_target(player)
@@ -572,6 +634,16 @@ class ThreeKingdomsEngine:
                         "card": card.to_dict(),
                         "action": "heal",
                     })
+            elif card.subtype == BasicType.WINE:
+                # === 修复 P2-5: 酒的效果 ===
+                # 标记本回合出杀伤害 +1
+                player.skill_state["wine_effect"] = True
+                self.ui.display_system_message(f"{player.name} 喝了酒，本回合出杀伤害 +1")
+                self._log_event("card_played", {
+                    "player_id": player.id,
+                    "card": card.to_dict(),
+                    "action": "wine",
+                })
         elif isinstance(card, EquipmentCard):
             old = player.equipped.equip(card)
             if old:
@@ -582,29 +654,77 @@ class ThreeKingdomsEngine:
                 "card": card.to_dict(),
                 "action": "equip",
             })
-        
+        elif isinstance(card, TrickCard):
+            # === 修复 P1-2: 锦囊牌效果实现 ===
+            if not card.is_delayed:
+                # 非延时锦囊立即使用
+                self._use_trick_card(player, card)
+            else:
+                # 延时锦囊放入判定区
+                player.judged.append(card)
+                self.ui.display_system_message(f"{player.name} 使用了{card.name}，放在判定区")
+                self._log_event("card_played", {
+                    "player_id": player.id,
+                    "card": card.to_dict(),
+                    "action": "delayed_trick",
+                })
+
         self._update_game_board()
     
     def _resolve_slash(self, source: ThreeKingdomsPlayer, target: ThreeKingdomsPlayer, slash: Card) -> None:
-        """结算杀"""
+        """结算杀
+        修复 P2-5: 支持酒的伤害加成效果
+        修复 P2-6: 支持武将技能（空城、无双）
+        """
+        # === 修复 P2-6: 检查诸葛亮空城 ===
+        if not self._check_zhige(target):
+            self.ui.display_system_message(f"{target.name} 发动空城，不能成为杀的目标")
+            return
+
         self.ui.display_system_message(f"{source.name} 对{target.name} 出杀")
-        
+
+        # 计算伤害（考虑酒的效果）
+        damage = 1
+        if source.skill_state.get("wine_effect"):
+            damage = 2
+            source.skill_state["wine_effect"] = False  # 清除酒效果
+            self.ui.display_system_message(f"{source.name} 有酒效果，伤害 +1")
+
+        # === 修复 P2-6: 检查吕布无双技能 ===
+        need_two_dodges = False
+        if "feng" in source.skill_state.get("skills", []):
+            need_two_dodges = True
+            self.ui.display_system_message(f"{source.name}({source.general}) 发动无双，需要两张闪")
+
         # 目标出闪
-        dodge = next((c for c in target.hand_cards if isinstance(c, BasicCard) and c.subtype == BasicType.DODGE), None)
-        if dodge:
-            # AI 自动出闪
-            target.hand_cards.remove(dodge)
-            self.discard_pile.append(dodge)
-            self.ui.display_system_message(f"{target.name} 出闪，躲避了杀")
+        dodges = []
+        for c in target.hand_cards:
+            if isinstance(c, BasicCard) and c.subtype == BasicType.DODGE:
+                dodges.append(c)
+                if len(dodges) >= (2 if need_two_dodges else 1):
+                    break
+        
+        if len(dodges) >= (2 if need_two_dodges else 1):
+            # 目标出闪（可能需要两张）
+            for dodge in dodges:
+                target.hand_cards.remove(dodge)
+                self.discard_pile.append(dodge)
+            if need_two_dodges:
+                self.ui.display_system_message(f"{target.name} 出了两张闪，躲避了杀")
+            else:
+                self.ui.display_system_message(f"{target.name} 出闪，躲避了杀")
             self._log_event("card_responded", {
                 "player_id": target.id,
-                "response_card": dodge.name,
+                "response_card": "闪",
                 "success": True,
             })
         else:
             # 掉血
-            self.ui.display_system_message(f"{target.name} 没有闪，受到 1 点伤害")
-            self._deal_damage(source=source, target=target, damage=1)
+            if need_two_dodges:
+                self.ui.display_system_message(f"{target.name} 没有足够的闪，受到{damage}点伤害")
+            else:
+                self.ui.display_system_message(f"{target.name} 没有闪，受到{damage}点伤害")
+            self._deal_damage(source=source, target=target, damage=damage)
     
     def _deal_damage(self, source: Optional[ThreeKingdomsPlayer], target: ThreeKingdomsPlayer, damage: int) -> None:
         """造成伤害"""
@@ -656,47 +776,331 @@ class ThreeKingdomsEngine:
         self._update_game_board()
     
     def _dying_request(self, player: ThreeKingdomsPlayer) -> None:
-        """濒死求桃"""
+        """濒死求桃
+        修复：传递身份关系信息给 AI，让 AI 根据身份决定是否救
+        修复 P2-5: 濒死时可以先使用酒自救
+        """
         self.phase = Phase.DYING
         self.ui.display_system_message(f"=== {player.name} 进入濒死状态 ===")
-        
-        # 逆时针询问
+        self._log_event("dying_request", {
+            "player_id": player.id,
+            "hp": player.hp,
+        })
+
+        # === 修复 P2-5: 濒死时先尝试使用酒自救 ===
+        wine = next((c for c in player.hand_cards if isinstance(c, BasicCard) and c.subtype == BasicType.WINE), None)
+        if wine:
+            player.hand_cards.remove(wine)
+            self.discard_pile.append(wine)
+            player.hp = 1
+            self.ui.display_system_message(f"{player.name} 使用酒自救，体力恢复到 1")
+            self._log_event("card_responded", {
+                "player_id": player.id,
+                "response_card": "酒",
+                "saved": True,
+            })
+            return
+
+        # 逆时针询问其他玩家
         current = player.id
         asked_count = 0
         total_players = len([p for p in self.players.values() if p.is_alive])
-        
+
         while asked_count < total_players:
             current = self._get_next_alive_player(current)
             if not current:
                 break
-            
+
             asked_player = self.players[current]
             asked_count += 1
-            
+
             # 检查是否有桃
             peach = next((c for c in asked_player.hand_cards if isinstance(c, BasicCard) and c.subtype == BasicType.PEACH), None)
             if peach:
-                # 出桃
-                asked_player.hand_cards.remove(peach)
-                self.discard_pile.append(peach)
-                player.hp = 1
-                self.ui.display_system_message(f"{asked_player.name} 对{player.name} 使用桃")
-                self._log_event("card_responded", {
-                    "player_id": asked_player.id,
-                    "response_card": "桃",
-                    "target": player.id,
-                })
-                return
-        
+                # === 修复：使用 AI 决策是否救 ===
+                # 构建情境信息，包含身份关系
+                context = {
+                    "dying_player_id": player.id,
+                    "dying_player_role": player.role.value,  # 濒死玩家的身份
+                    "hand_cards": [c.to_dict() for c in asked_player.hand_cards],
+                    "alive_players": [p.id for p in self.players.values() if p.is_alive],
+                }
+                
+                # 调用 AI 决策
+                should_save = asked_player.agent.decide_dying_peach(context) if asked_player.agent else False
+                
+                if should_save:
+                    # 出桃
+                    asked_player.hand_cards.remove(peach)
+                    self.discard_pile.append(peach)
+                    player.hp = 1
+                    self.ui.display_system_message(f"{asked_player.name} 对{player.name} 使用桃")
+                    self._log_event("card_responded", {
+                        "player_id": asked_player.id,
+                        "response_card": "桃",
+                        "target": player.id,
+                        "saved": True,
+                    })
+                    return
+                else:
+                    print(f"[DEBUG] {asked_player.name} 有桃但决定不救{player.name}")
+
         # 无人救
+        self.ui.display_system_message(f"{player.name} 无人救援，死亡")
         player.is_alive = False
     
     def _find_attack_target(self, player: ThreeKingdomsPlayer) -> Optional[ThreeKingdomsPlayer]:
-        """寻找攻击目标"""
+        """寻找攻击目标（简化版：随机选择）"""
         for target in self.players.values():
             if target.is_alive and target.id != player.id and player.can_attack(target):
                 return target
         return None
+
+    def _find_attack_target_by_identity(self, player: ThreeKingdomsPlayer) -> Optional[ThreeKingdomsPlayer]:
+        """
+        根据身份选择攻击目标
+        修复 P2-4: 增加身份判断和战术决策
+        
+        身份逻辑：
+        - 主公：攻击可疑的反贼
+        - 忠臣：攻击反贼和内奸
+        - 反贼：攻击主公和忠臣
+        - 内奸：先消灭其他人，最后对付主公
+        """
+        # 获取所有可能的目标
+        potential_targets = []
+        
+        for target in self.players.values():
+            if not target.is_alive or target.id == player.id:
+                continue
+            if not player.can_attack(target):
+                continue
+            potential_targets.append(target)
+        
+        if not potential_targets:
+            return None
+        
+        # === 根据身份选择目标 ===
+        if player.role == Role.LORD:
+            # 主公：优先攻击反贼（如果有暴露的）
+            # 简化：随机选择
+            print(f"[DEBUG] {player.name}(主公) 选择攻击目标")
+            return random.choice(potential_targets)
+        
+        elif player.role == Role.LOYALIST:
+            # 忠臣：优先攻击反贼和内奸
+            # 简化：随机选择非主公目标
+            non_lord_targets = [t for t in potential_targets if t.role != Role.LORD]
+            if non_lord_targets:
+                print(f"[DEBUG] {player.name}(忠臣) 攻击非主公目标")
+                return random.choice(non_lord_targets)
+            return random.choice(potential_targets)
+        
+        elif player.role == Role.REBEL:
+            # 反贼：优先攻击主公
+            lord = next((t for t in potential_targets if t.role == Role.LORD), None)
+            if lord:
+                print(f"[DEBUG] {player.name}(反贼) 攻击主公")
+                return lord
+            # 其次攻击忠臣
+            loyalist = next((t for t in potential_targets if t.role == Role.LOYALIST), None)
+            if loyalist:
+                print(f"[DEBUG] {player.name}(反贼) 攻击忠臣")
+                return loyalist
+            return random.choice(potential_targets)
+        
+        elif player.role == Role.RENEGADE:
+            # 内奸：先消灭其他人，最后对付主公
+            # 简化：随机选择非主公目标
+            non_lord_targets = [t for t in potential_targets if t.role != Role.LORD]
+            if non_lord_targets:
+                print(f"[DEBUG] {player.name}(内奸) 攻击非主公目标")
+                return random.choice(non_lord_targets)
+            # 只剩主公时攻击主公
+            print(f"[DEBUG] {player.name}(内奸) 只能攻击主公")
+            return random.choice(potential_targets)
+        
+        return random.choice(potential_targets)
+
+    def _find_usable_trick(self, player: ThreeKingdomsPlayer) -> Optional[TrickCard]:
+        """寻找可以使用的锦囊牌"""
+        for card in player.hand_cards:
+            if isinstance(card, TrickCard) and not card.is_delayed:
+                # 检查是否有合法目标
+                if self._has_valid_trick_target(player, card):
+                    return card
+        return None
+
+    def _has_valid_trick_target(self, player: ThreeKingdomsPlayer, card: TrickCard) -> bool:
+        """检查锦囊是否有合法目标"""
+        if card.subtype == TrickType.PEACH_GARDEN:
+            # 桃园结义：有人体力不满
+            return any(p.is_alive and p.hp < p.max_hp for p in self.players.values())
+        elif card.subtype == TrickType.BARBARIAN:
+            # 南蛮入侵：有其他存活玩家
+            return len([p for p in self.players.values() if p.is_alive and p.id != player.id]) > 0
+        elif card.subtype == TrickType.ARROW_VOLLEY:
+            # 万箭齐发：有其他存活玩家
+            return len([p for p in self.players.values() if p.is_alive and p.id != player.id]) > 0
+        elif card.subtype in [TrickType.RIVER_DENY, TrickType.HAND_STEAL, TrickType.DUEL]:
+            # 单体锦囊：有其他存活玩家
+            return len([p for p in self.players.values() if p.is_alive and p.id != player.id]) > 0
+        return True
+
+    def _use_trick_card(self, source: ThreeKingdomsPlayer, card: TrickCard) -> None:
+        """
+        使用锦囊牌
+        修复 P1-2: 实现基本锦囊牌效果
+        """
+        self.ui.display_system_message(f"{source.name} 使用了{card.name}")
+        self._log_event("trick_used", {
+            "player_id": source.id,
+            "card": card.name,
+            "subtype": card.subtype.value,
+        })
+
+        if card.subtype == TrickType.RIVER_DENY:
+            # 过河拆桥：拆除目标一张牌
+            self._trick_river_deny(source, card)
+        elif card.subtype == TrickType.HAND_STEAL:
+            # 顺手牵羊：获得目标一张牌
+            self._trick_hand_steal(source, card)
+        elif card.subtype == TrickType.PEACH_GARDEN:
+            # 桃园结义：所有角色回复 1 点体力
+            self._trick_peach_garden(source, card)
+        elif card.subtype == TrickType.BARBARIAN:
+            # 南蛮入侵：所有其他角色出杀
+            self._trick_barbarian(source, card)
+        elif card.subtype == TrickType.ARROW_VOLLEY:
+            # 万箭齐发：所有其他角色出闪
+            self._trick_arrow_volley(source, card)
+        elif card.subtype == TrickType.DUEL:
+            # 决斗：与目标决斗
+            self._trick_duel(source, card)
+        elif card.subtype == TrickType.NULLIFICATION:
+            # 无懈可击：抵消锦囊效果（简化：暂不实现）
+            self.ui.display_system_message(f"{source.name} 使用了无懈可击（简化版暂不生效）")
+        else:
+            self.ui.display_system_message(f"{card.name} 效果未实现")
+
+    def _trick_river_deny(self, source: ThreeKingdomsPlayer, card: TrickCard) -> None:
+        """过河拆桥：拆除目标一张牌"""
+        # 选择目标（简化：随机选择有牌的玩家）
+        targets = [p for p in self.players.values() if p.is_alive and p.id != source.id and len(p.hand_cards) > 0]
+        if not targets:
+            self.ui.display_system_message("没有可拆除的目标")
+            return
+        
+        target = random.choice(targets)
+        discarded = random.choice(target.hand_cards)
+        target.hand_cards.remove(discarded)
+        self.discard_pile.append(discarded)
+        self.ui.display_system_message(f"{source.name} 对{target.name} 使用过河拆桥，拆除了{discarded.name}")
+        self._log_event("trick_result", {
+            "card": "过河拆桥",
+            "target": target.id,
+            "discarded": discarded.name,
+        })
+
+    def _trick_hand_steal(self, source: ThreeKingdomsPlayer, card: TrickCard) -> None:
+        """顺手牵羊：获得目标一张牌"""
+        targets = [p for p in self.players.values() if p.is_alive and p.id != source.id and len(p.hand_cards) > 0]
+        if not targets:
+            self.ui.display_system_message("没有可偷取的目标")
+            return
+        
+        target = random.choice(targets)
+        stolen = random.choice(target.hand_cards)
+        target.hand_cards.remove(stolen)
+        source.hand_cards.append(stolen)
+        self.ui.display_system_message(f"{source.name} 对{target.name} 使用顺手牵羊，获得了{stolen.name}")
+        self._log_event("trick_result", {
+            "card": "顺手牵羊",
+            "target": target.id,
+            "stolen": stolen.name,
+        })
+
+    def _trick_peach_garden(self, source: ThreeKingdomsPlayer, card: TrickCard) -> None:
+        """桃园结义：所有角色回复 1 点体力"""
+        healed_count = 0
+        for player in self.players.values():
+            if player.is_alive and player.hp < player.max_hp:
+                player.hp += 1
+                healed_count += 1
+        self.ui.display_system_message(f"桃园结义生效，{healed_count}名角色回复了 1 点体力")
+        self._log_event("trick_result", {
+            "card": "桃园结义",
+            "healed_count": healed_count,
+        })
+
+    def _trick_barbarian(self, source: ThreeKingdomsPlayer, card: TrickCard) -> None:
+        """南蛮入侵：所有其他角色出杀"""
+        self.ui.display_system_message("南蛮入侵：所有其他角色需要出杀")
+        for player in self.players.values():
+            if player.is_alive and player.id != source.id:
+                slash = next((c for c in player.hand_cards if isinstance(c, BasicCard) and c.subtype == BasicType.SLASH), None)
+                if slash:
+                    player.hand_cards.remove(slash)
+                    self.discard_pile.append(slash)
+                    self.ui.display_system_message(f"{player.name} 出了杀")
+                else:
+                    self._deal_damage(source=source, target=player, damage=1)
+                    self.ui.display_system_message(f"{player.name} 没有杀，受到 1 点伤害")
+        self._log_event("trick_result", {"card": "南蛮入侵"})
+
+    def _trick_arrow_volley(self, source: ThreeKingdomsPlayer, card: TrickCard) -> None:
+        """万箭齐发：所有其他角色出闪"""
+        self.ui.display_system_message("万箭齐发：所有其他角色需要出闪")
+        for player in self.players.values():
+            if player.is_alive and player.id != source.id:
+                dodge = next((c for c in player.hand_cards if isinstance(c, BasicCard) and c.subtype == BasicType.DODGE), None)
+                if dodge:
+                    player.hand_cards.remove(dodge)
+                    self.discard_pile.append(dodge)
+                    self.ui.display_system_message(f"{player.name} 出了闪")
+                else:
+                    self._deal_damage(source=source, target=player, damage=1)
+                    self.ui.display_system_message(f"{player.name} 没有闪，受到 1 点伤害")
+        self._log_event("trick_result", {"card": "万箭齐发"})
+
+    def _trick_duel(self, source: ThreeKingdomsPlayer, card: TrickCard) -> None:
+        """决斗：与目标决斗"""
+        targets = [p for p in self.players.values() if p.is_alive and p.id != source.id]
+        if not targets:
+            return
+        
+        target = random.choice(targets)
+        self.ui.display_system_message(f"{source.name} 对{target.name} 使用决斗")
+        
+        # 简化决斗：双方轮流出杀，先不出杀者掉血
+        source_slash = next((c for c in source.hand_cards if isinstance(c, BasicCard) and c.subtype == BasicType.SLASH), None)
+        target_slash = next((c for c in target.hand_cards if isinstance(c, BasicCard) and c.subtype == BasicType.SLASH), None)
+        
+        if source_slash and target_slash:
+            # 都有杀，各打五十大板（简化）
+            source.hand_cards.remove(source_slash)
+            target.hand_cards.remove(target_slash)
+            self.discard_pile.append(source_slash)
+            self.discard_pile.append(target_slash)
+            self.ui.display_system_message("双方都出了杀，决斗平局")
+        elif target_slash:
+            # 源没有杀，源掉血
+            source.hand_cards.remove(target_slash)
+            self.discard_pile.append(target_slash)
+            self._deal_damage(source=target, target=source, damage=1)
+            self.ui.display_system_message(f"{source.name} 没有杀，受到 1 点伤害")
+        else:
+            # 目标没有杀，目标掉血
+            if target_slash:
+                target.hand_cards.remove(target_slash)
+                self.discard_pile.append(target_slash)
+            self._deal_damage(source=source, target=target, damage=1)
+            self.ui.display_system_message(f"{target.name} 没有杀，受到 1 点伤害")
+        
+        self._log_event("trick_result", {
+            "card": "决斗",
+            "target": target.id,
+        })
     
     def _get_next_alive_player(self, current_id: int) -> Optional[int]:
         """获取下一个存活玩家"""
@@ -716,37 +1120,59 @@ class ThreeKingdomsEngine:
             self.current_player_id = next_id
     
     def _check_game_over(self) -> bool:
-        """检查游戏是否结束"""
+        """
+        检查游戏是否结束
+
+        Returns:
+            True 表示游戏结束，False 表示继续
+        """
         lord = next((p for p in self.players.values() if p.role == Role.LORD), None)
         if not lord or not lord.is_alive:
             # 主公死亡，反贼胜
-            self.ui.display_system_message("主公死亡，反贼获胜！")
             return True
-        
+
         rebels = [p for p in self.players.values() if p.role == Role.REBEL and p.is_alive]
         renegades = [p for p in self.players.values() if p.role == Role.RENEGADE and p.is_alive]
-        
+
         if not rebels and not renegades:
             # 所有反贼和内奸死亡，主忠胜
-            self.ui.display_system_message("所有反贼和内奸死亡，主公阵营获胜！")
             return True
-        
+
         return False
+
+    def _get_winner_message(self) -> str:
+        """获取获胜方消息"""
+        lord = next((p for p in self.players.values() if p.role == Role.LORD), None)
+        if not lord or not lord.is_alive:
+            return "主公死亡，反贼获胜！"
+
+        rebels = [p for p in self.players.values() if p.role == Role.REBEL and p.is_alive]
+        renegades = [p for p in self.players.values() if p.role == Role.RENEGADE and p.is_alive]
+
+        if not rebels and not renegades:
+            return "所有反贼和内奸死亡，主公阵营获胜！"
+
+        return ""
     
     def _end_game(self) -> None:
         """结束游戏"""
         self.ui.notify_game_event("game_over", {})
         self._log_event("game_over", {})
-        
+
         self.ui.display_system_message("=== 游戏结束 ===")
-        
+
+        # 显示获胜方
+        winner_msg = self._get_winner_message()
+        if winner_msg:
+            self.ui.display_system_message(winner_msg)
+
         # 显示所有玩家身份
         self.ui.display_system_message("=== 玩家身份 ===")
         for player in self.players.values():
             role_str = player.role.value
             status = "存活" if player.is_alive else "死亡"
             self.ui.display_system_message(f"{player.name}: {player.general} - {role_str} ({status})")
-        
+
         self.ui.display_system_message(f"日志已保存至：{self.log_file}")
     
     def _update_game_board(self) -> None:
@@ -783,3 +1209,33 @@ class ThreeKingdomsEngine:
                 board_text += f"\n{'='*60}\n"
         
         print(board_text)
+
+    # === 修复 P2-6: 武将技能触发方法 ===
+    def _trigger_end_turn_skill(self, player: ThreeKingdomsPlayer) -> None:
+        """回合结束时触发技能"""
+        skills = player.skill_state.get("skills", [])
+        
+        # 貂蝉 - 闭月：回合结束时摸一张牌
+        if "bi" in skills:
+            self._skill_diaochan_bi(player)
+    
+    def _skill_diaochan_bi(self, player: ThreeKingdomsPlayer) -> None:
+        """貂蝉闭月技能"""
+        self._draw_cards(player, 1)
+        self.ui.display_system_message(f"{player.name}({player.general}) 触发闭月，摸一张牌")
+        self._log_event("skill_triggered", {
+            "player_id": player.id,
+            "general": player.general,
+            "skill": "闭月",
+        })
+
+    def _check_zhige(self, target: ThreeKingdomsPlayer) -> bool:
+        """
+        检查是否可以攻击目标（检查技能影响）
+        Returns: True 表示可以攻击，False 表示不能攻击
+        """
+        # 检查诸葛亮空城
+        if "kong" in target.skill_state.get("skills", []):
+            if len(target.hand_cards) == 0:
+                return False
+        return True

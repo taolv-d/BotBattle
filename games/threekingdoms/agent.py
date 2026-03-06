@@ -199,64 +199,74 @@ class ThreeKingdomsAgent:
     def decide_dying_peach(self, context: dict) -> bool:
         """
         决定是否桃濒死玩家
-        
+        修复：根据身份关系决定 AI 是否使用桃
+        - 反贼不应该救主公
+        - 忠臣应该救主公
+        - 内奸根据局势决定
+        - 队友应该互相救
+
         Args:
             context: 当前情境
-        
+
         Returns:
             是否使用桃
         """
-        dying_player = context.get("dying_player")
+        dying_player_id = context.get("dying_player_id")
+        dying_player_role = context.get("dying_player_role")  # 濒死玩家的身份（AI 视角可能不知道）
         hand_cards = context.get("hand_cards", [])
-        relationship = context.get("relationship")  # 与濒死玩家的关系
+        alive_players = context.get("alive_players", [])
         
         # 检查是否有桃
         has_peach = any(c.get("name") == "桃" for c in hand_cards)
         if not has_peach:
             return False
-        
-        prompt = f"""你是{self.general}（{self.role}），有玩家濒死。
 
-濒死玩家：{dying_player}
-你们的关系：{relationship}
-手牌：{', '.join([c['name'] for c in hand_cards])}
-信任：{self.trust_list}
-怀疑：{self.suspect_list}
-
-请决定是否使用桃救他，返回 JSON 格式：
-{{"save": true/false, "reason": "原因"}}
-"""
+        # === 修复核心逻辑：根据身份关系决定是否救 ===
+        # 1. 反贼不应该救主公
+        if self.role == "反贼" and dying_player_role == "主公":
+            print(f"[DEBUG] {self.player_id}号反贼拒绝救主公")
+            return False
         
-        messages = [
-            {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": prompt}
-        ]
+        # 2. 忠臣应该救主公
+        if self.role == "忠臣" and dying_player_role == "主公":
+            print(f"[DEBUG] {self.player_id}号忠臣决定救主公")
+            return True
         
-        content, _ = self.llm.chat(messages, max_tokens=50)
+        # 3. 主公应该救忠臣（如果判断是队友）
+        if self.role == "主公" and dying_player_role == "忠臣":
+            print(f"[DEBUG] {self.player_id}号主公决定救忠臣")
+            return True
         
-        # 记录思考
-        thought = {
-            "player_id": self.player_id,
-            "phase": "dying_respond",
-            "situation": {
-                "dying_player": dying_player,
-                "relationship": relationship,
-            },
-            "reasoning": content[:100],
-            "final_decision": content[:30],
-        }
-        self.thought_history.append(thought)
+        # 4. 反贼应该救其他反贼（队友）
+        if self.role == "反贼" and dying_player_role == "反贼":
+            print(f"[DEBUG] {self.player_id}号反贼决定救队友")
+            return True
         
-        try:
-            start = content.find("{")
-            end = content.rfind("}") + 1
-            if start >= 0 and end > start:
-                result = json.loads(content[start:end])
-                return result.get("save", False)
-        except:
-            pass
+        # 5. 忠臣应该救其他忠臣（如果有）
+        if self.role == "忠臣" and dying_player_role == "忠臣":
+            print(f"[DEBUG] {self.player_id}号忠臣决定救队友")
+            return True
         
-        # 默认不救
+        # 6. 内奸根据局势决定（优先保自己，局势不明时可救）
+        if self.role == "内奸":
+            # 如果濒死的是主公，且场上还有其他人，可以考虑救（维持平衡）
+            if dying_player_role == "主公":
+                print(f"[DEBUG] {self.player_id}号内奸决定救主公（维持平衡）")
+                return True
+            # 其他情况根据信任列表决定
+            if dying_player_id in self.trust_list:
+                print(f"[DEBUG] {self.player_id}号内奸决定救信任的玩家")
+                return True
+            print(f"[DEBUG] {self.player_id}号内奸决定不救")
+            return False
+        
+        # 7. 其他情况：根据信任列表决定
+        if dying_player_id in self.trust_list:
+            print(f"[DEBUG] {self.player_id}号决定救信任的玩家")
+            return True
+        
+        # 默认不救（保存桃子）
+        print(f"[DEBUG] {self.player_id}号决定不救（默认）")
         return False
     
     def get_thought_history(self, limit: int = 10) -> list[dict]:
