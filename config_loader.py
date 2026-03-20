@@ -1,7 +1,7 @@
 """配置加载器"""
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 
 class ConfigManager:
@@ -52,6 +52,6 @@ class ConfigManager:
         """获取游戏配置"""
         return self.game
     
-    def get_personality_names(self) -> list[str]:
+    def get_personality_names(self) -> List[str]:
         """获取人格名称列表"""
         return self.game.get("personalities", [])

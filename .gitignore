@@ -42,6 +42,9 @@ config/system.json
 logs/
 *.log
 
+# 复盘报告
+reviews/
+
 # 测试相关
 tests/__pycache__/
 tests/common/__pycache__/

@@ -3,7 +3,7 @@ import json
 import time
 import requests
 import logging
-from typing import Optional
+from typing import Optional, List, Tuple
 
 # 屏蔽 urllib3 的警告信息（避免显示端口相关警告）
 logging.getLogger("urllib3").setLevel(logging.ERROR)
@@ -28,7 +28,7 @@ class LLMClient:
         self.retry_delay = config.get("retry_delay", 1)  # 从配置读取重试间隔
         self.speech_delay = config.get("speech_delay", 0.3)  # AI 发言间隔
     
-    def chat(self, messages: list[dict], max_tokens: int = 200) -> tuple[str, str]:
+    def chat(self, messages: List[dict], max_tokens: int = 200) -> Tuple[str, str]:
         """
         发送对话请求（带重试机制）
         
@@ -91,8 +91,8 @@ class LLMClient:
         print(f"[提示] 请检查：1) 网络连接 2) API Key 是否有效 3) API 服务是否正常")
         return f"[系统错误：{last_error}]", ""
     
-    def generate_with_inner_thought(self, system_prompt: str, user_prompt: str, 
-                                     max_length: int = 100) -> tuple[str, str]:
+    def generate_with_inner_thought(self, system_prompt: str, user_prompt: str,
+                                     max_length: int = 100) -> Tuple[str, str]:
         """
         生成回复和内心独白
         

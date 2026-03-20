@@ -1,6 +1,6 @@
 """人格系统"""
 import json
-from typing import Optional
+from typing import Optional, Dict, List
 from pathlib import Path
 
 
@@ -31,7 +31,7 @@ class PersonalityManager:
     """人格管理器"""
     
     def __init__(self, config_path: str = "config/personalities.json"):
-        self.personalities: dict[str, Personality] = {}
+        self.personalities: Dict[str, Personality] = {}
         self.load_from_file(config_path)
     
     def load_from_file(self, path: str) -> None:
@@ -50,7 +50,7 @@ class PersonalityManager:
         """获取人格"""
         return self.personalities.get(name)
     
-    def get_all(self) -> list[str]:
+    def get_all(self) -> List[str]:
         """获取所有人格名称"""
         return list(self.personalities.keys())
     

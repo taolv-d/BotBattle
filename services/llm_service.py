@@ -570,7 +570,7 @@ class DashScopeLLM(BaseLLMProvider):
     def __init__(self, config: Dict[str, Any]):
         self.api_key = config.get("api_key", "")
         self.model = config.get("model", "qwen-plus")
-        self.base_url = config.get("base_url", "https://dashscope.aliyuncs.com/api/v1")
+        self.base_url = config.get("base_url", "https://coding.dashscope.aliyuncs.com/v1")
         self.temperature = config.get("temperature", 0.7)
         self.timeout = config.get("timeout", 120)
         self.retry_count = config.get("retry_count", 2)
@@ -587,22 +587,18 @@ class DashScopeLLM(BaseLLMProvider):
             "Authorization": f"Bearer {self.api_key}"
         }
 
-        # 通义千问使用 dashscope 兼容格式
+        # 使用 OpenAI 兼容格式
         payload = {
             "model": self.model,
-            "input": {
-                "messages": [
-                    {"role": "user", "content": prompt}
-                ]
-            },
-            "parameters": {
-                "temperature": self.temperature,
-                "max_tokens": 2000,
-            }
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": self.temperature,
+            "max_tokens": 2000,
         }
 
-        # DashScope API 端点
-        url = f"{self.base_url}/services/aigc/text-generation/generation"
+        # DashScope OpenAI 兼容模式 API 端点
+        url = f"{self.base_url}/chat/completions"
 
         # 重试机制
         last_error = None
@@ -617,17 +613,10 @@ class DashScopeLLM(BaseLLMProvider):
                     return response.json()
 
                 data = await loop.run_in_executor(None, make_request)
-                
-                # DashScope 返回格式
-                if "output" in data and "text" in data["output"]:
-                    content = data["output"]["text"].strip()
-                    return content
-                elif "choices" in data and len(data["choices"]) > 0:
-                    content = data["choices"][0]["message"]["content"].strip()
-                    return content
-                else:
-                    logger.warning(f"DashScope 返回格式异常：{data}")
-                    return "抱歉，响应格式异常。"
+
+                # DashScope OpenAI 兼容模式返回格式
+                content = data["choices"][0]["message"]["content"].strip()
+                return content
 
             except requests.exceptions.Timeout:
                 last_error = "请求超时"
@@ -664,6 +653,7 @@ class DashScopeLLM(BaseLLMProvider):
         import asyncio
         import requests
         import time
+        import json
 
         # 构建要求 JSON 格式输出的提示
         formatted_prompt = f"""{prompt}
@@ -682,20 +672,18 @@ Schema: {json.dumps(schema, ensure_ascii=False)}
             "Authorization": f"Bearer {self.api_key}"
         }
 
+        # 使用 OpenAI 兼容格式
         payload = {
             "model": self.model,
-            "input": {
-                "messages": [
-                    {"role": "user", "content": formatted_prompt}
-                ]
-            },
-            "parameters": {
-                "temperature": 0.1,  # 低温度确保格式准确
-                "max_tokens": 2000,
-            }
+            "messages": [
+                {"role": "user", "content": formatted_prompt}
+            ],
+            "temperature": 0.1,  # 低温度确保格式准确
+            "max_tokens": 2000,
         }
 
-        url = f"{self.base_url}/services/aigc/text-generation/generation"
+        # DashScope OpenAI 兼容模式 API 端点
+        url = f"{self.base_url}/chat/completions"
 
         # 重试机制
         last_error = None
@@ -709,13 +697,9 @@ Schema: {json.dumps(schema, ensure_ascii=False)}
                     return response.json()
 
                 data = await loop.run_in_executor(None, make_request)
-                
-                # 提取响应内容
-                content = ""
-                if "output" in data and "text" in data["output"]:
-                    content = data["output"]["text"].strip()
-                elif "choices" in data and len(data["choices"]) > 0:
-                    content = data["choices"][0]["message"]["content"].strip()
+
+                # DashScope OpenAI 兼容模式返回格式
+                content = data["choices"][0]["message"]["content"].strip()
 
                 # 尝试从响应中提取 JSON
                 start_idx = content.find('{')
