@@ -20,6 +20,7 @@ from games.werewolf.config import GameConfig
 from games.werewolf.orchestrator import WerewolfOrchestrator
 from services.logger_service import LoggerService
 from services.tts_interface import MockTTS
+from services.game_review_service import ReviewConfig, ReviewMode
 
 
 def create_game_config(config_mgr: ConfigManager) -> GameConfig:
@@ -110,10 +111,62 @@ def main():
     print(f"[OK] 玩家数量：{game_config.player_count}人")
 
     # 创建日志服务（使用时间戳生成独立日志文件）
-    logger = LoggerService()
+    logger = LoggerService(max_memory_entries=1000)  # 保留 1000 条日志用于复盘
 
     # 创建 TTS 服务（使用模拟实现）
     tts = MockTTS()
+
+    # 配置复盘服务
+    print("\n是否启用复盘报告生成？")
+    print("  1. 启用（推荐）")
+    print("  2. 禁用")
+
+    try:
+        review_choice = input("\n请输入选项 (1/2): ").strip()
+    except EOFError:
+        review_choice = "1"
+
+    if review_choice == "2":
+        review_config = ReviewConfig(enabled=False)
+        print("\n复盘功能已禁用")
+    else:
+        # 选择复盘模式
+        print("\n选择复盘报告详细程度：")
+        print("  1. 简要总结")
+        print("  2. 详细报告（推荐）")
+        print("  3. 深度分析（含漏洞检测）")
+
+        try:
+            mode_choice = input("\n请输入选项 (1/2/3): ").strip()
+        except EOFError:
+            mode_choice = "2"
+
+        mode_map = {
+            "1": ReviewMode.SUMMARY,
+            "2": ReviewMode.DETAILED,
+            "3": ReviewMode.ANALYSIS
+        }
+        mode = mode_map.get(mode_choice, ReviewMode.DETAILED)
+
+        # 是否启用漏洞检测
+        if mode == ReviewMode.ANALYSIS:
+            detect_loopholes = True
+        else:
+            try:
+                loophole_choice = input("\n是否检测逻辑漏洞？(y/n): ").strip().lower()
+                detect_loopholes = loophole_choice == 'y'
+            except EOFError:
+                detect_loopholes = False
+
+        review_config = ReviewConfig(
+            enabled=True,
+            mode=mode,
+            detect_loopholes=detect_loopholes,
+            max_log_entries=500
+        )
+        print(f"\n复盘功能已启用：{mode.value}模式")
+        if detect_loopholes:
+            print("逻辑漏洞检测已启用")
     
     # 选择游戏模式
     print("\n请选择游戏模式：")
@@ -150,7 +203,8 @@ def main():
             config=game_config,
             llm_config=llm_config,
             logger=logger,
-            tts=tts
+            tts=tts,
+            review_config=review_config
         )
         
         # 显示玩家身份
@@ -171,19 +225,42 @@ def main():
         
         # 运行游戏
         asyncio.run(orchestrator.run_game())
-        
+
         # 显示游戏结果
         print("\n" + "=" * 50)
         print("游戏结束")
         print("=" * 50)
-        
+
         winner_name = {
             "good": "好人阵营",
             "werewolf": "狼人阵营"
         }.get(orchestrator.state.winner, orchestrator.state.winner)
-        
+
         print(f"获胜方：{winner_name}")
         print(f"原因：{orchestrator.state.reason}")
+
+        # 显示复盘报告信息
+        if review_config.enabled:
+            print("\n" + "=" * 50)
+            print("复盘报告")
+            print("=" * 50)
+
+            # 等待复盘报告生成完成
+            import time
+            time.sleep(2)  # 等待异步任务完成
+
+            # 加载并显示报告
+            report = orchestrator.review_service.load_report(orchestrator.state.game_id)
+            if report:
+                print(f"\n复盘报告已生成：reviews/review_{orchestrator.state.game_id}.md")
+                print(f"\n报告摘要:\n{report.summary[:500]}...")
+
+                if report.loopholes:
+                    print(f"\n⚠️ 检测到 {len(report.loopholes)} 个逻辑漏洞:")
+                    for i, loophole in enumerate(report.loopholes[:3], 1):
+                        print(f"  {i}. {loophole.get('type', '未知')}: {loophole.get('analysis', '')[:100]}")
+            else:
+                print("\n复盘报告生成中，请稍后查看 reviews/ 目录...")
         
     except Exception as e:
         print(f"\n[错误] 游戏运行出错: {e}")

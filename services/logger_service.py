@@ -2,7 +2,8 @@ import logging
 import os
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from typing import Optional
+from typing import Optional, List, Dict
+from collections import deque
 
 
 class LoggerService:
@@ -13,7 +14,8 @@ class LoggerService:
     每次运行生成独立的日志文件（使用时间戳区分）
     """
 
-    def __init__(self, log_dir: str = "logs", log_level: int = logging.INFO, game_id: Optional[str] = None):
+    def __init__(self, log_dir: str = "logs", log_level: int = logging.INFO, game_id: Optional[str] = None,
+                 max_memory_entries: int = 1000):
         """
         初始化日志服务
 
@@ -21,11 +23,13 @@ class LoggerService:
             log_dir: 日志目录路径
             log_level: 日志级别
             game_id: 游戏 ID（可选），用于日志文件名。如果不提供，将使用时间戳
+            max_memory_entries: 内存中保留的最大日志条目数（用于复盘）
         """
         self.log_dir = log_dir
         self.log_level = log_level
         self.logger = None
         self.game_id = game_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._memory_log = deque(maxlen=max_memory_entries)  # 内存日志缓存
         self._setup_logger()
 
     def _setup_logger(self):
@@ -97,7 +101,23 @@ class LoggerService:
             "event_type": event_type,
             "data": data
         }
+        self._memory_log.append(event_data)  # 添加到内存缓存
         self.logger.info(f"GAME_EVENT: {event_data}")
+
+    def get_recent_entries(self, limit: int = 500) -> List[Dict]:
+        """
+        获取最近的日志条目
+
+        Args:
+            limit: 最大返回条目数
+
+        Returns:
+            日志条目列表
+        """
+        entries = list(self._memory_log)
+        if len(entries) > limit:
+            entries = entries[-limit:]
+        return entries
 
     def log_agent_interaction(self, agent_id: str, prompt: str, response: str, context: Optional[dict] = None):
         """
@@ -117,6 +137,7 @@ class LoggerService:
             "response": response,
             "context": context or {}
         }
+        self._memory_log.append(interaction_data)  # 添加到内存缓存
         self.logger.info(f"AGENT_INTERACTION: {interaction_data}")
 
     def log_game_state(self, state_info: dict):
@@ -131,6 +152,7 @@ class LoggerService:
             "event_type": "game_state_snapshot",
             "state": state_info
         }
+        self._memory_log.append(state_data)  # 添加到内存缓存
         self.logger.info(f"GAME_STATE: {state_data}")
 
     def log_night_actions(self, actions: dict):
@@ -145,6 +167,7 @@ class LoggerService:
             "event_type": "night_actions",
             "actions": actions
         }
+        self._memory_log.append(night_data)  # 添加到内存缓存
         self.logger.info(f"NIGHT_ACTIONS: {night_data}")
 
     def log_night_action(self, player_id: int, action: str, target: Optional[int] = None):
@@ -161,6 +184,11 @@ class LoggerService:
             "action": action,
             "target": target
         }
+        self._memory_log.append({
+            "timestamp": datetime.now().isoformat(),
+            "event_type": "night_action",
+            "data": data
+        })  # 添加到内存缓存
         self.log_event("night_action", data)
 
     def log_vote(self, voter_id: int, target_id: int):
@@ -175,6 +203,11 @@ class LoggerService:
             "voter_id": voter_id,
             "target_id": target_id
         }
+        self._memory_log.append({
+            "timestamp": datetime.now().isoformat(),
+            "event_type": "vote",
+            "data": data
+        })  # 添加到内存缓存
         self.log_event("vote", data)
 
     def log_result(self, result: str, details: dict):
@@ -189,6 +222,11 @@ class LoggerService:
             "result": result,
             "details": details
         }
+        self._memory_log.append({
+            "timestamp": datetime.now().isoformat(),
+            "event_type": "game_result",
+            "data": data
+        })  # 添加到内存缓存
         self.log_event("game_result", data)
 
     def log_day_phases(self, phase: str, details: dict):

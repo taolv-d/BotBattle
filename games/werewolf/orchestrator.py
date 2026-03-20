@@ -13,6 +13,7 @@ from .group_chat import WerewolfGroupChat
 from services.logger_service import LoggerService
 from services.tts_interface import TTSInterface
 from services.llm_service import LLMService
+from services.game_review_service import GameReviewService, ReviewConfig
 
 
 class WerewolfOrchestrator:
@@ -22,16 +23,18 @@ class WerewolfOrchestrator:
     负责整个游戏流程的管理和协调
     """
     
-    def __init__(self, config: GameConfig, llm_config: Dict[str, Any], 
-                 logger: LoggerService, tts: Optional[TTSInterface] = None):
+    def __init__(self, config: GameConfig, llm_config: Dict[str, Any],
+                 logger: LoggerService, tts: Optional[TTSInterface] = None,
+                 review_config: Optional[ReviewConfig] = None):
         """
         初始化游戏编排器
-        
+
         Args:
             config: 游戏配置
             llm_config: LLM 配置
             logger: 日志服务
             tts: TTS 接口（可选）
+            review_config: 复盘配置（可选）
         """
         self.config = config
         self.llm_service = LLMService(llm_config)
@@ -43,7 +46,11 @@ class WerewolfOrchestrator:
         self.speech_order = []
         self.self_explode_flag = False
         self.exploded_player_id = None
-        
+
+        # 初始化复盘服务
+        self.review_service = GameReviewService(config=review_config)
+        self.review_service.set_llm_service(self.llm_service)
+
         # 初始化游戏
         self._init_game()
     
@@ -1198,7 +1205,7 @@ class WerewolfOrchestrator:
         """
         self.state.game_over = True
         self.logger.info(f"游戏结束！获胜方：{self.state.winner}，原因：{self.state.reason}")
-        
+
         # 记录游戏结果
         result_details = {
             "winner": self.state.winner,
@@ -1208,9 +1215,43 @@ class WerewolfOrchestrator:
             "remaining_players": self.state.get_alive_players(),
             "final_roles": {pid: player.role.value for pid, player in self.state.players.items()}
         }
-        
+
         self.logger.log_result(f"Game Over - {self.state.winner} win", result_details)
-        
+
         # 如果有 TTS，播报结果
         if self.tts:
             self.tts.speak(f"游戏结束！{self.state.winner}阵营获得胜利！")
+
+        # 生成复盘报告
+        asyncio.create_task(self._generate_review_report(result_details))
+
+    async def _generate_review_report(self, result_details: Dict[str, Any]):
+        """
+        生成复盘报告
+
+        Args:
+            result_details: 游戏结果详情
+        """
+        try:
+            # 获取日志条目
+            log_entries = self.logger.get_recent_entries(
+                limit=self.review_service.config.max_log_entries
+            )
+
+            # 生成报告
+            report = await self.review_service.generate_review(
+                game_id=self.state.game_id,
+                game_type="werewolf",
+                log_entries=log_entries,
+                game_result=result_details
+            )
+
+            if report:
+                self.logger.info(f"复盘报告已生成：{report.game_id}")
+                if report.loopholes:
+                    self.logger.warning(f"检测到 {len(report.loopholes)} 个逻辑漏洞")
+            else:
+                self.logger.info("复盘报告生成已跳过")
+
+        except Exception as e:
+            self.logger.error(f"生成复盘报告失败：{e}")
