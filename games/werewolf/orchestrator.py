@@ -63,8 +63,7 @@ class WerewolfOrchestrator:
         self.logger.info(f"游戏开始: {self.state.game_id}")
         self.logger.info(f"玩家配置: {[(p.id, p.role.value, p.name) for p in self.state.players.values()]}")
         
-        # 进行警长竞选
-        asyncio.run(self._run_president_election())
+        # 注意：警长竞选在 run_game() 中执行，不在初始化时执行
     
     def _create_players_and_agents(self):
         """创建玩家和对应的 Agent"""
@@ -118,6 +117,9 @@ class WerewolfOrchestrator:
         """
         self.logger.info("开始运行狼人杀游戏")
         
+        # 警长竞选
+        await self._run_president_election()
+
         # 检查游戏是否已经结束
         if self.state.is_game_over():
             self._end_game()
@@ -215,7 +217,17 @@ class WerewolfOrchestrator:
                 },
                 "day_phase": "discussion"
             }
-            
+
+            # 为预言家传递已查验玩家的信息
+            if self.state.players[player_id].role == Role.SEER:
+                seer_player = self.state.players[player_id]
+                checked_info = {}
+                for checked_id in seer_player.checked_players:
+                    # 获取被查验玩家的身份
+                    checked_role = self.state.players[checked_id].role.value
+                    checked_info[checked_id] = checked_role
+                context["checked_info"] = checked_info
+
             # 记录游戏状态
             self.logger.log_game_state({
                 "day_number": self.state.day_number,
@@ -682,9 +694,11 @@ class WerewolfOrchestrator:
             "is_first_night": self.state.night_number == 1
         })
 
+        # 深度信息隔离：不传递 wolf_target 给女巫 Agent
+        # 女巫只知道 has_death，不知道具体被刀的是谁
         context = {
             "has_death": has_death,  # 狼人是否刀了人（不考虑守卫）
-            # 不传递 dead_player，即使刀的是女巫自己
+            # 不传递 wolf_target，女巫不应该知道具体被刀的是谁
             "heal_used": witch.heal_used,
             "poison_used": witch.poison_used,
             "is_first_night": self.state.night_number == 1,
@@ -692,8 +706,8 @@ class WerewolfOrchestrator:
             "my_id": witch_id,
             "can_dual_use": self.config.rules.get("witch_same_night_dual_use", False),
             "cannot_poison_first_night": self.config.rules.get("witch_cannot_poison_first_night", False),
-            "rules": self.config.rules,
-            "wolf_target": wolf_target  # 实际被刀目标，用于内部计算，但不告诉女巫
+            "rules": self.config.rules
+            # 注意：wolf_target 不传递给女巫 Agent，由 Orchestrator 处理 save_target
         }
 
         action = await self.agents[witch_id].night_action(context)
@@ -1002,7 +1016,7 @@ class WerewolfOrchestrator:
 
         candidates = []
         for player_id in self.state.get_alive_players():
-            if self.agents[player_id].decide_to_run_president():
+            if await self.agents[player_id].decide_to_run_president():
                 candidates.append(player_id)
 
         if not candidates:

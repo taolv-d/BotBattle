@@ -9,7 +9,8 @@
     {"role": "hunter", "count": 1}
   ],
   "personalities": [
-    "honest", "liar", "smooth", "cold", "chatterbox", "aggressive", "passive"
+    "honest", "liar", "smooth", "cold", "chatterbox", "aggressive", "passive",
+    "logical", "emotional"
   ],
   "game_rules": {
     "discussion_rounds": 2,
