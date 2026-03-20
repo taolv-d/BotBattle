@@ -156,7 +156,7 @@ class WerewolfOrchestrator:
         self.logger.info(f"第 {self.state.day_number} 天开始")
         
         # 初始化发言顺序
-        self._init_speech_order()
+        await self._init_speech_order()
         
         # 检查是否发生自爆
         self.self_explode_flag = False
@@ -308,7 +308,7 @@ class WerewolfOrchestrator:
         
         self.logger.info(f"{player_id}号 狼人自爆，直接进入夜晚")
     
-    def _init_speech_order(self):
+    async def _init_speech_order(self):
         """
         初始化发言顺序
 
@@ -330,7 +330,7 @@ class WerewolfOrchestrator:
             # 警长决定顺序
             president_idx = alive.index(self.state.president_id)
             try:
-                direction = self.agents[self.state.president_id].choose_direction()
+                direction = await self.agents[self.state.president_id].choose_direction()
             except:
                 direction = "left"  # 默认左置位
 
