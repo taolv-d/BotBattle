@@ -38,6 +38,8 @@ class LLMService:
             self._init_anthropic()
         elif self.provider == "ollama":
             self._init_ollama()
+        elif self.provider == "dashscope":
+            self._init_dashscope()
         else:
             # 默认使用模拟实现
             self.provider_instance = MockLLM()
@@ -99,6 +101,19 @@ class LLMService:
             self.provider_instance = MockLLM()
         except Exception as e:
             logger.error(f"Error initializing Ollama: {e}. Using mock implementation.")
+            self.provider_instance = MockLLM()
+
+    def _init_dashscope(self):
+        """初始化阿里云百炼（DashScope）服务"""
+        try:
+            api_key = self.model_config.get("api_key")
+            if not api_key:
+                raise ValueError("DashScope API key is required")
+
+            self.provider_instance = DashScopeLLM(self.model_config)
+            logger.info(f"DashScope LLM 已初始化：{self.model_config.get('model', 'qwen-plus')}")
+        except Exception as e:
+            logger.error(f"Error initializing DashScope: {e}. Using mock implementation.")
             self.provider_instance = MockLLM()
 
     async def generate_response(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
@@ -542,3 +557,204 @@ Schema: {json.dumps(schema, ensure_ascii=False)}
         # 所有重试失败
         logger.error(f"DeepSeek 请求最终失败：{last_error}")
         raise Exception(f"DeepSeek 请求失败：{last_error}")
+
+
+class DashScopeLLM(BaseLLMProvider):
+    """
+    阿里云百炼（DashScope）LLM 实现
+
+    支持通义千问等模型
+    API 文档：https://help.aliyun.com/zh/dashscope/
+    """
+
+    def __init__(self, config: Dict[str, Any]):
+        self.api_key = config.get("api_key", "")
+        self.model = config.get("model", "qwen-plus")
+        self.base_url = config.get("base_url", "https://dashscope.aliyuncs.com/api/v1")
+        self.temperature = config.get("temperature", 0.7)
+        self.timeout = config.get("timeout", 120)
+        self.retry_count = config.get("retry_count", 2)
+        self.retry_delay = config.get("retry_delay", 1)
+
+    async def generate_response(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """生成响应"""
+        import asyncio
+        import requests
+        import time
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+        # 通义千问使用 dashscope 兼容格式
+        payload = {
+            "model": self.model,
+            "input": {
+                "messages": [
+                    {"role": "user", "content": prompt}
+                ]
+            },
+            "parameters": {
+                "temperature": self.temperature,
+                "max_tokens": 2000,
+            }
+        }
+
+        # DashScope API 端点
+        url = f"{self.base_url}/services/aigc/text-generation/generation"
+
+        # 重试机制
+        last_error = None
+        for attempt in range(self.retry_count):
+            try:
+                # 在线程池中运行同步请求
+                loop = asyncio.get_event_loop()
+
+                def make_request():
+                    response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+                    response.raise_for_status()
+                    return response.json()
+
+                data = await loop.run_in_executor(None, make_request)
+                
+                # DashScope 返回格式
+                if "output" in data and "text" in data["output"]:
+                    content = data["output"]["text"].strip()
+                    return content
+                elif "choices" in data and len(data["choices"]) > 0:
+                    content = data["choices"][0]["message"]["content"].strip()
+                    return content
+                else:
+                    logger.warning(f"DashScope 返回格式异常：{data}")
+                    return "抱歉，响应格式异常。"
+
+            except requests.exceptions.Timeout:
+                last_error = "请求超时"
+                logger.warning(f"DashScope 请求超时，{self.retry_delay}秒后重试 ({attempt+1}/{self.retry_count})...")
+                time.sleep(self.retry_delay)
+            except requests.exceptions.ConnectionError as e:
+                last_error = f"连接错误：{str(e)}"
+                logger.warning(f"DashScope 网络连接失败，{self.retry_delay}秒后重试...")
+                time.sleep(self.retry_delay)
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 401:
+                    logger.error("DashScope API Key 无效")
+                    raise ValueError("API Key 无效")
+                elif e.response.status_code == 429:
+                    last_error = "请求频率超限"
+                    logger.warning(f"DashScope 请求频率超限，{self.retry_delay}秒后重试...")
+                    time.sleep(self.retry_delay)
+                else:
+                    last_error = f"HTTP 错误：{e.response.status_code}"
+                    logger.error(f"DashScope HTTP 错误：{last_error}")
+                    raise
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"DashScope 请求失败：{str(e)}，{self.retry_delay}秒后重试...")
+                time.sleep(self.retry_delay)
+
+        # 所有重试失败
+        logger.error(f"DashScope 请求最终失败：{last_error}")
+        raise Exception(f"DashScope 请求失败：{last_error}")
+
+    async def generate_structured_output(self, prompt: str, schema: Dict[str, Any],
+                                      context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """生成结构化输出"""
+        import asyncio
+        import requests
+        import time
+
+        # 构建要求 JSON 格式输出的提示
+        formatted_prompt = f"""{prompt}
+
+请严格按照以下 JSON Schema 生成数据（只返回 JSON 数据对象，不要返回 Schema 定义）：
+Schema: {json.dumps(schema, ensure_ascii=False)}
+
+示例：如果 Schema 是 {{"type": "object", "properties": {{"action": {{"type": "string"}}}}}}
+你应该返回：{{"action": "具体动作"}}
+而不是：{{"type": "object", "properties": {{"action": {{"type": "string"}}}}}}
+
+直接返回 JSON 数据，不要添加任何解释："""
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+        payload = {
+            "model": self.model,
+            "input": {
+                "messages": [
+                    {"role": "user", "content": formatted_prompt}
+                ]
+            },
+            "parameters": {
+                "temperature": 0.1,  # 低温度确保格式准确
+                "max_tokens": 2000,
+            }
+        }
+
+        url = f"{self.base_url}/services/aigc/text-generation/generation"
+
+        # 重试机制
+        last_error = None
+        for attempt in range(self.retry_count):
+            try:
+                loop = asyncio.get_event_loop()
+
+                def make_request():
+                    response = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+                    response.raise_for_status()
+                    return response.json()
+
+                data = await loop.run_in_executor(None, make_request)
+                
+                # 提取响应内容
+                content = ""
+                if "output" in data and "text" in data["output"]:
+                    content = data["output"]["text"].strip()
+                elif "choices" in data and len(data["choices"]) > 0:
+                    content = data["choices"][0]["message"]["content"].strip()
+
+                # 尝试从响应中提取 JSON
+                start_idx = content.find('{')
+                end_idx = content.rfind('}') + 1
+                if start_idx != -1 and end_idx != 0:
+                    json_str = content[start_idx:end_idx]
+                    return json.loads(json_str)
+                else:
+                    logger.warning(f"DashScope 未返回有效 JSON: {content[:200]}")
+                    return {}
+
+            except requests.exceptions.Timeout:
+                last_error = "请求超时"
+                logger.warning(f"DashScope 请求超时，{self.retry_delay}秒后重试...")
+                time.sleep(self.retry_delay)
+            except requests.exceptions.ConnectionError as e:
+                last_error = f"连接错误：{str(e)}"
+                logger.warning(f"DashScope 网络连接失败...")
+                time.sleep(self.retry_delay)
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 401:
+                    logger.error("DashScope API Key 无效")
+                    raise ValueError("API Key 无效")
+                elif e.response.status_code == 429:
+                    last_error = "请求频率超限"
+                    logger.warning(f"DashScope 请求频率超限...")
+                    time.sleep(self.retry_delay)
+                else:
+                    last_error = f"HTTP 错误：{e.response.status_code}"
+                    logger.error(f"DashScope HTTP 错误：{last_error}")
+                    raise
+            except json.JSONDecodeError as e:
+                logger.error(f"DashScope JSON 解析错误：{e}")
+                raise
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"DashScope 请求失败：{str(e)}...")
+                time.sleep(self.retry_delay)
+
+        # 所有重试失败
+        logger.error(f"DashScope 请求最终失败：{last_error}")
+        raise Exception(f"DashScope 请求失败：{last_error}")
