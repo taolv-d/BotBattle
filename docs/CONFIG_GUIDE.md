@@ -209,7 +209,7 @@ ping api.deepseek.com
 
 **检查 API Key：**
 ```bash
-python test_api.py
+python tests/common/test_api.py
 ```
 
 **使用国内 API：**
@@ -287,7 +287,7 @@ pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ## 八、测试 API 连接
 
 ```bash
-python test_api.py
+python tests/common/test_api.py
 ```
 
 或运行游戏验证配置：
@@ -312,9 +312,10 @@ BotBattle/
 │   ├── werewolf_default.json # 游戏配置
 │   └── personalities.json   # 人格库
 ├── logs/                    # 游戏日志（自动创建）
-├── main.py                  # 主程序
 ├── werewolf_main.py         # 狼人杀主程序
-├── test_api.py              # API 测试
+├── threekingdoms.py         # 三国杀主程序
+├── tests/
+│   └── common/test_api.py   # API 测试
 └── requirements.txt         # 依赖
 ```
 

@@ -422,3 +422,11 @@ class WerewolfAgent(ABC):
             return "left"
         else:
             return "right"
+
+    async def decide_self_explode(self, context: Dict[str, Any]) -> bool:
+        """
+        决定是否自爆
+
+        默认实现为不自爆，狼人角色可自行覆盖。
+        """
+        return False

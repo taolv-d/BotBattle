@@ -1,6 +1,13 @@
-# BotBattle - AI 狼人杀
+# BotBattle
 
-🤖 AI 驱动的狼人杀游戏引擎，支持完整的游戏流程和智能 AI 发言。
+AI 驱动的桌游对战项目，目前包含狼人杀与三国杀两个游戏方向。项目以可扩展的游戏模块、LLM 服务封装、日志与复盘能力为核心，支持观察模式和部分玩家参与模式。
+
+## 当前状态
+
+- 狼人杀主线已迁移到 `games/werewolf/` 新架构
+- 三国杀实现位于 `games/threekingdoms/`
+- 提供公共服务层：LLM、日志、TTS、游戏复盘
+- 文档中心位于 `docs/`
 
 ## 快速开始
 
@@ -11,168 +18,86 @@ git clone <repository-url>
 cd BotBattle
 ```
 
-### 2. 配置 API Key
+### 2. 初始化配置
 
-复制示例配置文件：
+```bash
+python init.py
+```
+
+如果没有使用初始化脚本，也可以手动复制：
+
 ```bash
 cp config/system.example.json config/system.json
 ```
 
-然后编辑 `config/system.json`，填入你的 API Key：
-```json
-{
-  "llm": {
-    "provider": "deepseek",
-    "api_key": "YOUR_API_KEY",
-    "model": "deepseek-chat",
-    "base_url": "https://api.deepseek.com/v1"
-  }
-}
-```
+### 3. 配置 API Key
 
-**获取 API Key：**
-- DeepSeek: https://platform.deepseek.com/
-- Kimi: https://platform.moonshot.cn/
-- 通义千问：https://dashscope.aliyun.com/
+编辑 `config/system.json`，填入可用的 API 配置。详细说明见 [docs/CONFIG_GUIDE.md](docs/CONFIG_GUIDE.md)。
 
-### 3. 安装依赖
+### 4. 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. 测试 API 连接
+### 5. 测试 API 连接
 
 ```bash
-python test_api.py
+python tests/common/test_api.py
 ```
 
-### 5. 运行游戏
+### 6. 运行游戏
+
+狼人杀：
 
 ```bash
-python main.py
+python werewolf_main.py
 ```
 
-详细部署说明请查看 [DEPLOY.md](DEPLOY.md)
+三国杀：
 
-## 已完成功能 ✅
-
-### 游戏流程
-- ✅ 完整狼人杀规则（9 人标准局）
-- ✅ 警长竞选环节
-- ✅ 多轮发言（每轮 2 轮）
-- ✅ 投票前辩论（显示怀疑/信任列表）
-- ✅ 遗言环节
-- ✅ 夜晚行动（狼人刀人、预言家查验、女巫用药）
-- ✅ 猎人技能（死后可以带人）
-- ✅ 女巫技能（解药 + 毒药）
-
-### AI 功能
-- ✅ 大模型驱动发言
-- ✅ 7 种人格（真诚、爱撒谎、笑面虎、高冷、啰嗦、激进、佛系）
-- ✅ 隐藏任务系统
-- ✅ 记忆系统（记住之前的发言）
-- ✅ 信任/怀疑列表（根据发言自动更新）
-- ✅ 内心独白（写入日志）
-- ✅ 发言长度控制（根据人格）
-
-### 技术特性
-- ✅ 网络重试机制（5 次重试，3 秒间隔）
-- ✅ 超时保护（180 秒超时）
-- ✅ 日志记录（JSON 格式）
-- ✅ UI 接口抽象（方便扩展 Web）
-- ✅ 配置化设计（易扩展其他游戏）
-
-## 游戏配置
-
-### 标准 9 人局（默认）
-- 狼人 ×3
-- 村民 ×3
-- 预言家 ×1
-- 女巫 ×1
-- 猎人 ×1
-
-### 人格系统
-
-| 人格 | 特点 | 发言长度 |
-|------|------|----------|
-| 真诚 | 诚实正直 | 30-80 字 |
-| 爱撒谎 | 擅长欺骗 | 40-120 字 |
-| 笑面虎 | 表面友好 | 35-100 字 |
-| 高冷 | 话少简洁 | 10-40 字 |
-| 啰嗦 | 话多分析 | 60-200 字 |
-| 激进 | 强势带节奏 | 30-100 字 |
-| 佛系 | 低调跟随 | 15-50 字 |
-
-## 游戏日志
-
-每局游戏自动生成日志文件，保存在 `logs/` 目录：
-- 游戏全程记录
-- AI 内心独白
-- JSON 格式，方便回放分析
-
-## 扩展其他游戏
-
-本架构支持扩展其他轮流对话型游戏：
-- 剧本杀
-- 三国杀
-- 阿瓦隆
-- 血染钟楼
-
-只需在 `games/` 目录下创建新游戏模块即可。
-
-## 架构设计
-
+```bash
+python threekingdoms.py
 ```
+
+## 目录概览
+
+```text
 BotBattle/
-├── main.py              # 主入口
-├── config_loader.py     # 配置加载
-├── test_auto.py         # 自动测试
-├── test_analyze.py      # 分析功能测试
-├── config/
-│   ├── system.json      # 系统配置
-│   ├── werewolf_default.json  # 游戏配置
-│   └── personalities.json # 人格库
-├── core/
-│   ├── state.py         # 游戏状态
-│   └── game_engine.py   # 游戏引擎
-├── ai/
-│   ├── llm_client.py    # LLM 客户端
-│   ├── personality.py   # 人格系统
-│   └── agent.py         # AI 代理
-├── ui/
-│   ├── base.py          # UI 基类
-│   └── cli.py           # 命令行实现
-├── games/werewolf/      # 狼人杀模块
-└── logs/                # 游戏日志
+├── werewolf_main.py              # 狼人杀入口
+├── threekingdoms.py              # 三国杀入口
+├── init.py                       # 初始化脚本
+├── config_loader.py              # 配置加载
+├── config/                       # 系统与游戏配置
+├── docs/                         # 项目文档
+├── games/
+│   ├── werewolf/                 # 狼人杀新架构
+│   └── threekingdoms/            # 三国杀实现
+├── services/                     # LLM、日志、TTS、复盘等服务
+├── tests/                        # 测试
+├── ui/                           # CLI/UI 抽象
+└── logs/                         # 游戏日志输出
 ```
+
+## 文档入口
+
+- 项目文档索引：[docs/README.md](docs/README.md)
+- 配置指南：[docs/CONFIG_GUIDE.md](docs/CONFIG_GUIDE.md)
+- 狼人杀重构索引：[docs/refactor_202603/README.md](docs/refactor_202603/README.md)
+- 狼人杀主说明：[docs/refactor_202603/WEREWOLF_GUIDE.md](docs/refactor_202603/WEREWOLF_GUIDE.md)
+- 三国杀设计：[docs/SDD_ThreeKingdoms.md](docs/SDD_ThreeKingdoms.md)
+
+## 测试
+
+当前仓库中可以看到的测试包括：
+
+- `tests/common/test_api.py`：LLM API 连接测试
+- `tests/werewolf/test_seer_revealed.py`：狼人杀发言与预言家信息测试
+- `tests/test_game_review.py`：复盘服务测试
+- `test_threekingdoms_fixes.py`：三国杀修复验证脚本
 
 ## 注意事项
 
-1. **API 选择**：推荐使用 DeepSeek（性价比高）或 Kimi（速度快）
-2. **网络连接**：如果频繁连接失败，检查网络或切换 API
-3. **发言质量**：AI 发言质量取决于 LLM 模型，可调整 temperature 参数
-4. **游戏平衡**：当前版本狼人胜率略高，后续会优化
-
-## 故障排除
-
-### API 连接失败
-```bash
-# 运行测试脚本
-python test_api.py
-```
-
-### 检查配置
-```json
-{
-  "api_key": "确保填写有效的 Key",
-  "timeout": 180,
-  "retry_count": 5
-}
-```
-
-### 查看日志
-```bash
-# 最新的日志文件
-ls -lt logs/ | head -1
-```
+- `config/system.json` 含有 API Key，不应提交到 Git
+- 狼人杀相关重构文档中有部分 TODO 未完全回写，阅读时请以代码现状为准
+- 复盘功能会在游戏结束后生成 `reviews/` 目录下的报告文件

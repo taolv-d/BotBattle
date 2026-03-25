@@ -2,6 +2,7 @@ from .base import WerewolfAgent
 from ..config import Role
 from typing import Dict, Any, Optional
 import random
+import json
 
 
 class WolfAgent(WerewolfAgent):
@@ -59,6 +60,60 @@ class WolfAgent(WerewolfAgent):
         self.add_memory(f"夜晚决定击杀 {target} 号玩家")
 
         return {"action": "attack", "target": target}
+
+    async def decide_self_explode(self, context: Dict[str, Any]) -> bool:
+        """
+        决定是否在白天自爆
+        """
+        alive_players = context.get("alive_players", [])
+        alive_wolves = context.get("alive_wolves", [])
+        day_number = context.get("day_number", 0)
+        president_id = context.get("president_id")
+        speech_order = context.get("speech_order", [])
+
+        fallback = False
+        if alive_players:
+            wolf_ratio = len(alive_wolves) / len(alive_players)
+            fallback = wolf_ratio <= 0.34 and day_number >= 2
+
+        prompt = f"""你是{self.name}（狼人），正在评估是否要在白天自爆。
+
+当前天数：第 {day_number} 天
+当前存活玩家：{alive_players}
+当前存活狼人：{alive_wolves}
+当前警长：{president_id}
+当前发言顺序：{speech_order}
+你的狼人队友：{self.wolf_teammates}
+
+请判断现在是否值得自爆。一般来说，只有在以下情况才考虑自爆：
+1. 狼人处于明显劣势，需要立刻中断白天投票
+2. 你即将被高概率放逐
+3. 自爆能明显保护队友或争取夜晚轮次
+
+如果没有足够收益，就不要自爆。
+
+请严格返回 JSON：
+{{
+  "explode": true 或 false,
+  "reason": "简短原因"
+}}
+只返回 JSON，不要其他解释。"""
+
+        try:
+            response = await self.llm_service.generate_response(prompt)
+            start = response.find("{")
+            end = response.rfind("}") + 1
+            if start >= 0 and end > start:
+                result = json.loads(response[start:end])
+                decision = bool(result.get("explode", False))
+                reason = result.get("reason", "")
+                self.add_memory(f"评估自爆：{decision}，原因：{reason}")
+                return decision
+        except Exception:
+            pass
+
+        self.add_memory(f"评估自爆：{fallback}（使用回退策略）")
+        return fallback
 
     async def speak(self, context: Dict[str, Any]) -> str:
         """
@@ -120,8 +175,6 @@ class WolfAgent(WerewolfAgent):
                 "my_id": int
             }
         """
-        import json
-
         candidates = context.get("candidates", [])
         alive_players = context.get("alive_players", [])
 

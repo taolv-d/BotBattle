@@ -41,8 +41,12 @@ class LoggerService:
         self.logger = logging.getLogger("werewolf_game")
         self.logger.setLevel(self.log_level)
 
-        # 清除已有的处理器
-        self.logger.handlers.clear()
+        # 清除已有的处理器，并显式关闭文件句柄
+        for handler in list(self.logger.handlers):
+            try:
+                handler.close()
+            finally:
+                self.logger.removeHandler(handler)
 
         # 创建格式器
         formatter = logging.Formatter(
@@ -71,6 +75,17 @@ class LoggerService:
 
         # 记录日志文件信息
         self.logger.info(f"日志文件：{log_file}")
+
+    def close(self):
+        """关闭所有日志处理器，释放文件句柄。"""
+        if not self.logger:
+            return
+
+        for handler in list(self.logger.handlers):
+            try:
+                handler.close()
+            finally:
+                self.logger.removeHandler(handler)
 
     def info(self, message: str):
         """记录信息日志"""

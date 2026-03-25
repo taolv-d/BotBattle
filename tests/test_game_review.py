@@ -6,6 +6,10 @@
 import asyncio
 import sys
 from pathlib import Path
+import os
+
+if os.name == "nt":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))

@@ -102,6 +102,25 @@ class ReviewReport:
 class GameReviewService:
     """游戏复盘服务"""
 
+    REVIEW_EVENT_TYPES = {
+        "speech",
+        "pk_speech",
+        "president_candidate_speech",
+        "president_pk_speech",
+        "last_words",
+        "night_action",
+        "vote",
+        "game_result",
+    }
+
+    LOOPHOLE_EVENT_TYPES = {
+        "speech",
+        "pk_speech",
+        "president_candidate_speech",
+        "president_pk_speech",
+        "last_words",
+    }
+
     # 复盘报告 Prompt 模板
     REVIEW_PROMPT_TEMPLATE = """你是一位专业的游戏复盘分析师。请根据以下游戏日志，生成一份复盘报告。
 
@@ -213,8 +232,8 @@ class GameReviewService:
             event_type = entry.get("event_type", "")
             data = entry.get("data", {})
 
-            # 只记录关键事件
-            if event_type in ["speak", "night_action", "vote", "death", "game_over"]:
+            # 只记录当前实现中真实会写入的关键事件
+            if event_type in self.REVIEW_EVENT_TYPES:
                 formatted.append(f"[{timestamp}] {event_type}: {data}")
 
         return "\n".join(formatted) if formatted else "无关键事件记录"
@@ -322,7 +341,7 @@ class GameReviewService:
             # 格式化日志（只保留对话相关）
             dialogue_entries = [
                 e for e in log_entries
-                if e.get("event_type") in ["speak", "pk_speech", "president_speech"]
+                if e.get("event_type") in self.LOOPHOLE_EVENT_TYPES
             ]
             log_content = self._format_log_entries(dialogue_entries, self.config.max_log_entries)
 

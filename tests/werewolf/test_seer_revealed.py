@@ -11,6 +11,9 @@ import asyncio
 import sys
 import os
 
+if os.name == "nt":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 

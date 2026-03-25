@@ -275,19 +275,23 @@ class WerewolfOrchestrator:
         Returns:
             是否自爆
         """
-        # 模拟自爆决策
-        # 在实际实现中，这应该是通过 Agent 的决策来完成的
-        # 这里简化处理，随机决定是否自爆
-        import random
-        # 有一定概率自爆，特别是在不利情况下
         alive_wolves = self.state.get_werewolves()
         alive_players = self.state.get_alive_players()
-        
-        # 如果狼人处于劣势，增加自爆概率
-        wolf_ratio = len(alive_wolves) / len(alive_players) if alive_players else 0
-        explode_chance = 0.1 if wolf_ratio > 0.3 else 0.3  # 狼人比例低时自爆概率更高
-        
-        return random.random() < explode_chance
+        context = {
+            "day_number": self.state.day_number,
+            "alive_players": alive_players,
+            "alive_wolves": alive_wolves,
+            "president_id": self.state.president_id,
+            "speech_order": self.speech_order,
+            "my_id": player_id,
+        }
+
+        try:
+            return await self.agents[player_id].decide_self_explode(context)
+        except Exception as exc:
+            self.logger.warning(f"{player_id}号狼人自爆决策失败，使用回退策略：{exc}")
+            wolf_ratio = len(alive_wolves) / len(alive_players) if alive_players else 0
+            return wolf_ratio <= 0.34 and self.state.day_number >= 2
     
     def _handle_self_explode(self, player_id: int):
         """
@@ -625,37 +629,61 @@ class WerewolfOrchestrator:
         if not wolf_ids:
             return {"action": "none"}
         
-        # 狼人协商攻击目标
-        # 这里简化处理，取第一个狼人的选择
-        wolf_id = wolf_ids[0]
-        context = {
-            "alive_players": self.state.get_alive_players(),
-            "my_id": wolf_id,
-            "wolf_teammates": [wid for wid in wolf_ids if wid != wolf_id]
-        }
-        
-        # 记录夜晚行动前的状态
-        self.logger.log_game_state({
-            "phase": "night_action",
+        alive_players = self.state.get_alive_players()
+        proposals = []
+        vote_count = {}
+
+        for wolf_id in wolf_ids:
+            context = {
+                "alive_players": alive_players,
+                "my_id": wolf_id,
+                "wolf_teammates": [wid for wid in wolf_ids if wid != wolf_id]
+            }
+
+            self.logger.log_game_state({
+                "phase": "night_action",
+                "night_number": self.state.night_number,
+                "acting_player": wolf_id,
+                "role": "werewolf",
+                "alive_players": alive_players,
+                "wolf_teammates": [wid for wid in wolf_ids if wid != wolf_id]
+            })
+
+            action = await self.agents[wolf_id].night_action(context)
+
+            self.logger.log_agent_interaction(
+                agent_id=f"Wolf_{wolf_id}",
+                prompt=str(context),
+                response=str(action),
+                context={"phase": "night_action", "role": "werewolf", "night_number": self.state.night_number}
+            )
+
+            proposals.append({"wolf_id": wolf_id, "action": action})
+
+            target = action.get("target")
+            if action.get("action") == "attack" and target in alive_players:
+                vote_count[target] = vote_count.get(target, 0) + 1
+
+        if vote_count:
+            selected_target = sorted(
+                vote_count.items(),
+                key=lambda item: (-item[1], item[0])
+            )[0][0]
+            result = {"action": "attack", "target": selected_target}
+            self.logger.info(f"狼人协商结果：{selected_target}号玩家，票型={vote_count}")
+        else:
+            result = {"action": "skip", "target": None}
+            self.logger.info("狼人协商结果：空刀")
+
+        self.logger.log_event("wolf_coordination", {
             "night_number": self.state.night_number,
-            "acting_player": wolf_id,
-            "role": "werewolf",
-            "alive_players": self.state.get_alive_players(),
-            "wolf_teammates": [wid for wid in wolf_ids if wid != wolf_id]
+            "proposals": proposals,
+            "vote_count": vote_count,
+            "result": result,
         })
-        
-        action = await self.agents[wolf_id].night_action(context)
-        
-        # 记录 Agent 夜晚行动交互
-        self.logger.log_agent_interaction(
-            agent_id=f"Wolf_{wolf_id}",
-            prompt=str(context),
-            response=str(action),
-            context={"phase": "night_action", "role": "werewolf", "night_number": self.state.night_number}
-        )
-        
-        self.logger.log_night_action(wolf_id, "attack", action.get("target"))
-        return action
+
+        self.logger.log_night_action(wolf_ids[0], result.get("action"), result.get("target"))
+        return result
     
     async def _run_witch_night(self, wolf_action: Dict[str, Any]) -> Dict[str, Any]:
         """
