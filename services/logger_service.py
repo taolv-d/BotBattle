@@ -58,6 +58,7 @@ class LoggerService:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_filename = f"werewolf_game_{timestamp}.log"
         log_file = os.path.join(self.log_dir, log_filename)
+        self.log_file = log_file
         
         file_handler = RotatingFileHandler(
             log_file,
@@ -133,6 +134,10 @@ class LoggerService:
         if len(entries) > limit:
             entries = entries[-limit:]
         return entries
+
+    def get_entries_snapshot(self) -> List[Dict]:
+        """返回当前内存日志快照。"""
+        return list(self._memory_log)
 
     def log_agent_interaction(self, agent_id: str, prompt: str, response: str, context: Optional[dict] = None):
         """

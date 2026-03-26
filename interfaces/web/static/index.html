@@ -1,0 +1,112 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BotBattle 狼人杀后台页</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="page">
+    <header class="topbar">
+      <div>
+        <h1>BotBattle 狼人杀后台页</h1>
+        <p id="subtitle">上帝视角运行监控与调试观察</p>
+      </div>
+      <div class="actions">
+        <button id="createBtn">创建对局</button>
+        <button id="startBtn">启动对局</button>
+        <button id="refreshBtn">立即刷新</button>
+      </div>
+    </header>
+
+    <section class="panel controls">
+      <div class="control-row">
+        <label>模式
+          <select id="mode">
+            <option value="observer">观察模式</option>
+            <option value="player">玩家模式（后续实现）</option>
+          </select>
+        </label>
+        <label>真人座位
+          <input id="humanPlayerId" type="number" min="1" placeholder="玩家模式启用后可填写">
+        </label>
+        <label>复盘模式
+          <select id="reviewMode">
+            <option value="summary">summary</option>
+            <option value="detailed" selected>detailed</option>
+            <option value="analysis">analysis</option>
+          </select>
+        </label>
+        <label class="checkbox">
+          <input id="reviewEnabled" type="checkbox" checked>
+          启用复盘
+        </label>
+        <label class="checkbox">
+          <input id="detectLoopholes" type="checkbox">
+          检测漏洞
+        </label>
+      </div>
+    </section>
+
+    <section class="panel status-bar" id="statusBar">
+      <div class="status-item"><span>Session</span><strong id="sessionId">-</strong></div>
+      <div class="status-item"><span>Game</span><strong id="gameId">-</strong></div>
+      <div class="status-item"><span>Lifecycle</span><strong id="lifecycleStatus">-</strong></div>
+      <div class="status-item"><span>Phase</span><strong id="phase">-</strong></div>
+      <div class="status-item"><span>Day/Night</span><strong id="dayNight">-</strong></div>
+      <div class="status-item"><span>President</span><strong id="presidentId">-</strong></div>
+      <div class="status-item"><span>Alive</span><strong id="aliveCount">-</strong></div>
+    </section>
+
+    <main class="layout">
+      <section class="panel players-panel">
+        <div class="panel-header">
+          <h2>玩家面板</h2>
+        </div>
+        <table class="players-table">
+          <thead>
+            <tr>
+              <th>座位</th>
+              <th>存活</th>
+              <th>身份</th>
+              <th>阵营</th>
+              <th>警长</th>
+            </tr>
+          </thead>
+          <tbody id="playersBody"></tbody>
+        </table>
+      </section>
+
+      <section class="panel timeline-panel">
+        <div class="panel-header">
+          <h2>事件时间线</h2>
+          <div class="filters">
+            <select id="eventFilter">
+              <option value="all">全部事件</option>
+              <option value="speech">发言相关</option>
+              <option value="vote">投票相关</option>
+              <option value="night">夜晚相关</option>
+              <option value="system">系统相关</option>
+            </select>
+          </div>
+        </div>
+        <div class="timeline" id="timeline"></div>
+      </section>
+    </main>
+
+    <section class="lower-grid">
+      <section class="panel review-panel">
+        <div class="panel-header"><h2>复盘状态</h2></div>
+        <div id="reviewStatus">-</div>
+      </section>
+      <section class="panel error-panel">
+        <div class="panel-header"><h2>错误 / 等待状态</h2></div>
+        <pre id="errorBox">暂无错误</pre>
+      </section>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

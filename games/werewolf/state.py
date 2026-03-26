@@ -46,6 +46,7 @@ class GameState:
     """游戏状态"""
     game_id: str = ""
     player_count: int = 0
+    phase: str = "setup"
     day_number: int = 0
     night_number: int = 0
     president_id: Optional[int] = None

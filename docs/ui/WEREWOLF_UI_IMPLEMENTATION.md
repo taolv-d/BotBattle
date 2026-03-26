@@ -733,6 +733,44 @@ pending_input    = 交互层视角
 - 外部接口使用稳定 `phase`
 - 内部上下文继续自由演进
 
+### 8.11 `phase` / 典型事件 / UI 展示重点对照
+
+为了让第一版上帝视角后台页更容易直接落地，建议把不同 `phase` 下最值得展示的信息先约定清楚。
+
+| `phase` | 典型事件类型 | 后台页重点展示 |
+|------|------|------|
+| `setup` | `game_created`, `game_started` | 对局创建、配置摘要、玩家初始化结果 |
+| `president_election_speech` | `president_candidate_speech` | 候选人列表、竞选发言时间线 |
+| `president_election_vote` | `vote_cast`, `vote_result`, `president_changed` | 竞选投票过程、票型、是否当选 |
+| `president_election_pk` | `president_pk_speech`, `vote_cast`, `president_changed` | PK 发言、PK 投票、警长归属 |
+| `day_discussion` | `speech`, `phase_changed` | 当前发言顺序、发言内容、是否有自爆 |
+| `day_vote` | `vote_cast`, `vote_result` | 投票对象、票型、放逐结果 |
+| `day_vote_pk` | `pk_speech`, `vote_cast`, `vote_result` | PK 发言、再投票、最终放逐结果 |
+| `last_words` | `last_words` | 遗言内容、是否涉及警长继承 |
+| `night_guard` | `night_action_result` | 守卫行动结果摘要 |
+| `night_wolf` | `night_action_result` | 狼人袭击目标、协商结果摘要 |
+| `night_witch` | `night_action_result` | 女巫是否救人/毒人、药剂状态 |
+| `night_seer` | `night_action_result` | 预言家查验目标与结果 |
+| `hunter_skill` | `night_action_result`, `death` | 猎人是否开枪、带走目标 |
+| `game_over` | `game_finished`, `review_status_changed` | 胜负结果、结束原因、复盘进度 |
+
+#### 展示原则
+
+建议第一版后台页遵守这些展示原则：
+
+- 以当前 `phase` 为中心决定右侧时间线的重点内容
+- 以当前玩家存活、身份、警长状态作为左侧面板核心信息
+- 不要求每个 `phase` 都有独立页面，但应有明确的展示重点
+- 如果某个阶段暂时没有专门组件，也至少要保证时间线和状态栏能看出它已经发生
+
+#### 对实现的帮助
+
+这张对照表的作用是：
+
+- 后端更容易确定哪些事件必须稳定输出
+- 前端更容易确定哪些信息是“必须可见”的
+- 后续如果补单独阶段组件，也能以此为基线逐步增强
+
 ---
 
 ## 9. 状态快照获取方式

@@ -46,6 +46,7 @@ class WerewolfOrchestrator:
         self.speech_order = []
         self.self_explode_flag = False
         self.exploded_player_id = None
+        self.review_task = None
 
         # 初始化复盘服务
         self.review_service = GameReviewService(config=review_config)
@@ -58,6 +59,7 @@ class WerewolfOrchestrator:
         """初始化游戏"""
         self.state.game_id = f"werewolf_{random.randint(1000, 9999)}"
         self.state.player_count = self.config.player_count
+        self.state.phase = "setup"
         
         # 创建玩家和 Agent
         self._create_players_and_agents()
@@ -71,6 +73,21 @@ class WerewolfOrchestrator:
         self.logger.info(f"玩家配置: {[(p.id, p.role.value, p.name) for p in self.state.players.values()]}")
         
         # 注意：警长竞选在 run_game() 中执行，不在初始化时执行
+
+    def _set_phase(self, phase: str, details: Optional[Dict[str, Any]] = None):
+        """更新当前规则阶段，并发出稳定的阶段切换事件。"""
+        if self.state.phase == phase:
+            return
+
+        previous_phase = self.state.phase
+        self.state.phase = phase
+        self.logger.log_event("phase_changed", {
+            "previous_phase": previous_phase,
+            "phase": phase,
+            "day_number": self.state.day_number,
+            "night_number": self.state.night_number,
+            "details": details or {},
+        })
     
     def _create_players_and_agents(self):
         """创建玩家和对应的 Agent"""
@@ -130,6 +147,8 @@ class WerewolfOrchestrator:
         # 检查游戏是否已经结束
         if self.state.is_game_over():
             self._end_game()
+            if self.review_task:
+                await self.review_task
             return
         
         # 游戏主循环：白天-夜晚交替
@@ -147,6 +166,8 @@ class WerewolfOrchestrator:
                 break
         
         self._end_game()
+        if self.review_task:
+            await self.review_task
     
     async def _run_day(self):
         """
@@ -176,6 +197,7 @@ class WerewolfOrchestrator:
         if eliminated:
             player = self.state.players[eliminated]
             player.has_last_words = True  # 被放逐有遗言
+            self._set_phase("last_words", {"player_id": eliminated, "context": "day_vote"})
             
             # 发表遗言
             speech = await self.agents[eliminated].make_last_words()
@@ -196,6 +218,7 @@ class WerewolfOrchestrator:
         """
         白天发言阶段（支持随时自爆）
         """
+        self._set_phase("day_discussion")
         self.logger.info("开始白天发言")
         
         for player_id in self.speech_order:
@@ -308,8 +331,17 @@ class WerewolfOrchestrator:
         # 如果警长自爆，警徽流失
         if player_id == self.state.president_id:
             self.state.president_id = None
+            self.logger.log_event("president_changed", {
+                "president_id": None,
+                "reason": "self_explode",
+            })
             self.logger.info(f"警长自爆，警徽流失（不能指定继承者）")
         
+        self.logger.log_event("death", {
+            "player_id": player_id,
+            "cause": DeathCause.SELF_EXPLODE.value,
+            "phase": self.state.phase,
+        })
         self.logger.info(f"{player_id}号 狼人自爆，直接进入夜晚")
     
     async def _init_speech_order(self):
@@ -358,6 +390,7 @@ class WerewolfOrchestrator:
         2. 再次平票 → 无人被放逐，进入夜晚
         3. 平票后没有遗言环节
         """
+        self._set_phase("day_vote")
         self.logger.info("开始投票环节")
         
         # 第一轮投票
@@ -373,12 +406,23 @@ class WerewolfOrchestrator:
 
         if len(candidates) == 1:
             eliminated = candidates[0]
+            self.logger.log_event("vote_result", {
+                "round": 1,
+                "vote_count": vote_count,
+                "candidates": candidates,
+                "eliminated": eliminated,
+            })
             self.logger.info(f"{eliminated}号玩家被投票出局")
             
             # 更新玩家状态
             player = self.state.players[eliminated]
             player.is_alive = False
             player.death_cause = DeathCause.VOTE_OUT
+            self.logger.log_event("death", {
+                "player_id": eliminated,
+                "cause": DeathCause.VOTE_OUT.value,
+                "phase": self.state.phase,
+            })
             
             # 如果被投票的是警长，处理警长死亡
             if eliminated == self.state.president_id:
@@ -388,6 +432,14 @@ class WerewolfOrchestrator:
 
         # 平票处理
         self.logger.info(f"投票平票：{candidates}")
+        self._set_phase("day_vote_pk", {"candidates": candidates})
+        self.logger.log_event("vote_result", {
+            "round": 1,
+            "vote_count": vote_count,
+            "candidates": candidates,
+            "eliminated": None,
+            "is_tie": True,
+        })
 
         # PK 发言（按玩家 ID 排序）
         candidates.sort()  # 按 ID 排序
@@ -411,12 +463,23 @@ class WerewolfOrchestrator:
 
         if len(candidates2) == 1:
             eliminated = candidates2[0]
+            self.logger.log_event("vote_result", {
+                "round": 2,
+                "vote_count": vote_count2,
+                "candidates": candidates2,
+                "eliminated": eliminated,
+            })
             self.logger.info(f"PK后，{eliminated}号玩家被投票出局")
             
             # 更新玩家状态
             player = self.state.players[eliminated]
             player.is_alive = False
             player.death_cause = DeathCause.VOTE_OUT
+            self.logger.log_event("death", {
+                "player_id": eliminated,
+                "cause": DeathCause.VOTE_OUT.value,
+                "phase": self.state.phase,
+            })
             
             # 如果被投票的是警长，处理警长死亡
             if eliminated == self.state.president_id:
@@ -424,6 +487,13 @@ class WerewolfOrchestrator:
             
             return eliminated
         else:
+            self.logger.log_event("vote_result", {
+                "round": 2,
+                "vote_count": vote_count2,
+                "candidates": candidates2,
+                "eliminated": None,
+                "is_tie": True,
+            })
             self.logger.info("再次平票，无人被放逐")
             return None
     
@@ -545,6 +615,11 @@ class WerewolfOrchestrator:
             player.has_last_words = self.state.get_last_words_flag(
                 player.death_cause, self.state.night_number
             )
+            self.logger.log_event("death", {
+                "player_id": player_id,
+                "cause": player.death_cause.value if player.death_cause else "unknown",
+                "phase": self.state.phase,
+            })
             
             # 检查死亡玩家是否为警长，需要处理警长继承
             if player_id == self.state.president_id:
@@ -565,6 +640,7 @@ class WerewolfOrchestrator:
         for player_id in deaths:
             player = self.state.players[player_id]
             if player.has_last_words:
+                self._set_phase("last_words", {"player_id": player_id, "context": "night_death"})
                 speech = await self.agents[player_id].make_last_words()
                 self.logger.log_event("last_words", {
                     "player_id": player_id,
@@ -577,6 +653,7 @@ class WerewolfOrchestrator:
         """
         守卫夜晚行动
         """
+        self._set_phase("night_guard")
         guard_ids = [pid for pid in self.state.get_alive_players() 
                      if self.state.players[pid].role == Role.GUARD]
         
@@ -624,6 +701,7 @@ class WerewolfOrchestrator:
         """
         狼人夜晚行动
         """
+        self._set_phase("night_wolf")
         wolf_ids = self.state.get_werewolves()
         
         if not wolf_ids:
@@ -700,6 +778,7 @@ class WerewolfOrchestrator:
         - has_death 只基于 wolf_target is not None
         - 不考虑守卫守护情况（否则泄露守卫信息）
         """
+        self._set_phase("night_witch")
         witch_ids = [pid for pid in self.state.get_alive_players() 
                      if self.state.players[pid].role == Role.WITCH]
         
@@ -792,6 +871,7 @@ class WerewolfOrchestrator:
         """
         预言家夜晚行动
         """
+        self._set_phase("night_seer")
         seer_ids = [pid for pid in self.state.get_alive_players() 
                     if self.state.players[pid].role == Role.SEER]
         
@@ -993,6 +1073,11 @@ class WerewolfOrchestrator:
         if not can_shoot:
             return None
 
+        self._set_phase("hunter_skill", {
+            "hunter_id": hunter_id,
+            "death_cause": str(death_cause),
+        })
+
         # 猎人技能逻辑
         alive = [p.id for p in self.state.players.values()
                  if p.is_alive and p.id != hunter_id]
@@ -1034,6 +1119,11 @@ class WerewolfOrchestrator:
             target_player = self.state.players[target]
             target_player.is_alive = False
             target_player.death_cause = DeathCause.HUNTER_SHOT
+            self.logger.log_event("death", {
+                "player_id": target,
+                "cause": DeathCause.HUNTER_SHOT.value,
+                "phase": self.state.phase,
+            })
 
             # 检查游戏是否结束（猎人技能执行后立即检查）
             if self.state.is_game_over():
@@ -1059,6 +1149,7 @@ class WerewolfOrchestrator:
             return
 
         # 竞选发言
+        self._set_phase("president_election_speech", {"candidates": candidates})
         for candidate_id in candidates:
             context = {
                 "alive_players": self.state.get_alive_players(),
@@ -1090,6 +1181,7 @@ class WerewolfOrchestrator:
             })
 
         # 投票（此时没有警长，没有权重）
+        self._set_phase("president_election_vote", {"candidates": candidates})
         votes = {}
         for voter_id in self.state.get_alive_players():
             # 获取候选人（竞选阶段的候选人）
@@ -1133,6 +1225,10 @@ class WerewolfOrchestrator:
 
             if len(winners) == 1:
                 self.state.president_id = winners[0]
+                self.logger.log_event("president_changed", {
+                    "president_id": winners[0],
+                    "reason": "elected",
+                })
                 self.logger.info(f"{winners[0]}号 当选警长")
             else:
                 # 平票处理：重新竞选或无人当选
@@ -1150,6 +1246,7 @@ class WerewolfOrchestrator:
         3. 再次平票 → 无人当选警长（警徽流失）
         """
         self.logger.info(f"警长竞选平票：{winners}")
+        self._set_phase("president_election_pk", {"candidates": winners})
 
         # PK 发言（按玩家 ID 排序）
         winners.sort()
@@ -1178,6 +1275,10 @@ class WerewolfOrchestrator:
 
             if len(winners2) == 1:
                 self.state.president_id = winners2[0]
+                self.logger.log_event("president_changed", {
+                    "president_id": winners2[0],
+                    "reason": "elected_after_pk",
+                })
                 self.logger.info(f"{winners2[0]}号 当选警长（平票后）")
             else:
                 self.logger.info("再次平票，无人当选警长，警徽流失")
@@ -1207,10 +1308,18 @@ class WerewolfOrchestrator:
             if inherit_id and self.state.players.get(inherit_id) and self.state.players[inherit_id].is_alive:
                 # 有继承者
                 self.state.president_id = inherit_id
+                self.logger.log_event("president_changed", {
+                    "president_id": inherit_id,
+                    "reason": "inherit",
+                })
                 self.logger.info(f"警长继承：{inherit_id}号")
             else:
                 # 没有继承者，警徽流失
                 self.state.president_id = None
+                self.logger.log_event("president_changed", {
+                    "president_id": None,
+                    "reason": "lost_on_death",
+                })
                 self.logger.info("警长死亡，警徽流失")
     
     def _handle_president_inheritance(self, inherit_id: int):
@@ -1222,9 +1331,17 @@ class WerewolfOrchestrator:
         """
         if inherit_id and self.state.players.get(inherit_id) and self.state.players[inherit_id].is_alive:
             self.state.president_id = inherit_id
+            self.logger.log_event("president_changed", {
+                "president_id": inherit_id,
+                "reason": "inherit",
+            })
             self.logger.info(f"警长遗言指定继承：{inherit_id}号")
         else:
             self.state.president_id = None
+            self.logger.log_event("president_changed", {
+                "president_id": None,
+                "reason": "inherit_invalid",
+            })
             self.logger.info("警长遗言指定的继承者无效，警徽流失")
     
     def _end_game(self):
@@ -1232,6 +1349,7 @@ class WerewolfOrchestrator:
         结束游戏
         """
         self.state.game_over = True
+        self._set_phase("game_over")
         self.logger.info(f"游戏结束！获胜方：{self.state.winner}，原因：{self.state.reason}")
 
         # 记录游戏结果
@@ -1251,7 +1369,7 @@ class WerewolfOrchestrator:
             self.tts.speak(f"游戏结束！{self.state.winner}阵营获得胜利！")
 
         # 生成复盘报告
-        asyncio.create_task(self._generate_review_report(result_details))
+        self.review_task = asyncio.create_task(self._generate_review_report(result_details))
 
     async def _generate_review_report(self, result_details: Dict[str, Any]):
         """
