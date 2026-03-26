@@ -1,37 +1,37 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BotBattle 狼人杀后台页</title>
+  <title>BotBattle &#x72FC;&#x4EBA;&#x6740;&#x540E;&#x53F0;&#x9875;</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <div class="page">
     <header class="topbar">
       <div>
-        <h1>BotBattle 狼人杀后台页</h1>
-        <p id="subtitle">上帝视角运行监控与调试观察</p>
+        <h1>BotBattle &#x72FC;&#x4EBA;&#x6740;&#x540E;&#x53F0;&#x9875;</h1>
+        <p id="subtitle">&#x4E0A;&#x5E1D;&#x89C6;&#x89D2;&#x8FD0;&#x884C;&#x76D1;&#x63A7;&#x4E0E;&#x8C03;&#x8BD5;&#x89C2;&#x5BDF;</p>
       </div>
       <div class="actions">
-        <button id="createBtn">创建对局</button>
-        <button id="startBtn">启动对局</button>
-        <button id="refreshBtn">立即刷新</button>
+        <button id="createBtn">&#x521B;&#x5EFA;&#x5BF9;&#x5C40;</button>
+        <button id="startBtn">&#x542F;&#x52A8;&#x5BF9;&#x5C40;</button>
+        <button id="refreshBtn">&#x7ACB;&#x5373;&#x5237;&#x65B0;</button>
       </div>
     </header>
 
     <section class="panel controls">
       <div class="control-row">
-        <label>模式
+        <label>&#x6A21;&#x5F0F;
           <select id="mode">
-            <option value="observer">观察模式</option>
-            <option value="player">玩家模式（后续实现）</option>
+            <option value="observer">&#x89C2;&#x5BDF;&#x6A21;&#x5F0F;</option>
+            <option value="player">&#x73A9;&#x5BB6;&#x6A21;&#x5F0F;&#xFF08;&#x540E;&#x7EED;&#x5B9E;&#x73B0;&#xFF09;</option>
           </select>
         </label>
-        <label>真人座位
-          <input id="humanPlayerId" type="number" min="1" placeholder="玩家模式启用后可填写">
+        <label>&#x771F;&#x4EBA;&#x5EA7;&#x4F4D;
+          <input id="humanPlayerId" type="number" min="1" placeholder="&#x73A9;&#x5BB6;&#x6A21;&#x5F0F;&#x542F;&#x7528;&#x540E;&#x53EF;&#x586B;&#x5199;">
         </label>
-        <label>复盘模式
+        <label>&#x590D;&#x76D8;&#x6A21;&#x5F0F;
           <select id="reviewMode">
             <option value="summary">summary</option>
             <option value="detailed" selected>detailed</option>
@@ -40,11 +40,11 @@
         </label>
         <label class="checkbox">
           <input id="reviewEnabled" type="checkbox" checked>
-          启用复盘
+          &#x542F;&#x7528;&#x590D;&#x76D8;
         </label>
         <label class="checkbox">
           <input id="detectLoopholes" type="checkbox">
-          检测漏洞
+          &#x68C0;&#x6D4B;&#x6F0F;&#x6D1E;
         </label>
       </div>
     </section>
@@ -62,16 +62,16 @@
     <main class="layout">
       <section class="panel players-panel">
         <div class="panel-header">
-          <h2>玩家面板</h2>
+          <h2>&#x73A9;&#x5BB6;&#x9762;&#x677F;</h2>
         </div>
         <table class="players-table">
           <thead>
             <tr>
-              <th>座位</th>
-              <th>存活</th>
-              <th>身份</th>
-              <th>阵营</th>
-              <th>警长</th>
+              <th>&#x5EA7;&#x4F4D;</th>
+              <th>&#x5B58;&#x6D3B;</th>
+              <th>&#x8EAB;&#x4EFD;</th>
+              <th>&#x9635;&#x8425;</th>
+              <th>&#x8B66;&#x957F;</th>
             </tr>
           </thead>
           <tbody id="playersBody"></tbody>
@@ -80,14 +80,14 @@
 
       <section class="panel timeline-panel">
         <div class="panel-header">
-          <h2>事件时间线</h2>
+          <h2>&#x4E8B;&#x4EF6;&#x65F6;&#x95F4;&#x7EBF;</h2>
           <div class="filters">
             <select id="eventFilter">
-              <option value="all">全部事件</option>
-              <option value="speech">发言相关</option>
-              <option value="vote">投票相关</option>
-              <option value="night">夜晚相关</option>
-              <option value="system">系统相关</option>
+              <option value="all">&#x5168;&#x90E8;&#x4E8B;&#x4EF6;</option>
+              <option value="speech">&#x53D1;&#x8A00;&#x76F8;&#x5173;</option>
+              <option value="vote">&#x6295;&#x7968;&#x76F8;&#x5173;</option>
+              <option value="night">&#x591C;&#x665A;&#x76F8;&#x5173;</option>
+              <option value="system">&#x7CFB;&#x7EDF;&#x76F8;&#x5173;</option>
             </select>
           </div>
         </div>
@@ -95,14 +95,24 @@
       </section>
     </main>
 
+    <section class="panel speech-feed-panel">
+      <div class="panel-header">
+        <div>
+          <h2>&#x7FA4;&#x804A;&#x89C6;&#x56FE;</h2>
+          <p class="panel-subtitle">&#x6309;&#x804A;&#x5929;&#x65B9;&#x5F0F;&#x96C6;&#x4E2D;&#x5C55;&#x793A;&#x73A9;&#x5BB6;&#x53D1;&#x8A00;&#x4E0E;&#x5173;&#x952E;&#x7CFB;&#x7EDF;&#x64AD;&#x62A5;</p>
+        </div>
+      </div>
+      <div class="speech-feed" id="speechFeed"></div>
+    </section>
+
     <section class="lower-grid">
       <section class="panel review-panel">
-        <div class="panel-header"><h2>复盘状态</h2></div>
+        <div class="panel-header"><h2>&#x590D;&#x76D8;&#x72B6;&#x6001;</h2></div>
         <div id="reviewStatus">-</div>
       </section>
       <section class="panel error-panel">
-        <div class="panel-header"><h2>错误 / 等待状态</h2></div>
-        <pre id="errorBox">暂无错误</pre>
+        <div class="panel-header"><h2>&#x9519;&#x8BEF; / &#x7B49;&#x5F85;&#x72B6;&#x6001;</h2></div>
+        <pre id="errorBox">&#x6682;&#x65E0;&#x9519;&#x8BEF;</pre>
       </section>
     </section>
   </div>
