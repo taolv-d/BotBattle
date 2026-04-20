@@ -15,6 +15,7 @@ class WerewolfSession:
     orchestrator: Any
     logger: Any
     review_enabled: bool
+    input_adapter: Any = None
     thread: Optional[Thread] = None
     lifecycle_status: str = "created"
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())

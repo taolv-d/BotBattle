@@ -1,8 +1,12 @@
 const state = {
-  lastSequence: 0,
   session: null,
   snapshot: null,
+  review: null,
   events: [],
+  lastSequence: 0,
+  refreshTimer: null,
+  busy: false,
+  latestHint: "",
 };
 
 const SPEECH_EVENT_TYPES = new Set([
@@ -19,6 +23,8 @@ const CHAT_SYSTEM_EVENT_TYPES = new Set([
   "death",
   "president_changed",
   "game_finished",
+  "player_input_timeout",
+  "player_input_received",
 ]);
 
 async function api(path, options = {}) {
@@ -37,29 +43,71 @@ async function api(path, options = {}) {
   return payload.data;
 }
 
-async function createSession() {
+function buildCreatePayload(mode) {
   const payload = {
-    mode: document.getElementById("mode").value,
+    mode,
     review_enabled: document.getElementById("reviewEnabled").checked,
     review_mode: document.getElementById("reviewMode").value,
     detect_loopholes: document.getElementById("detectLoopholes").checked,
   };
-  const humanPlayerId = document.getElementById("humanPlayerId").value.trim();
-  if (humanPlayerId) {
-    payload.human_player_id = Number(humanPlayerId);
+  if (mode === "player") {
+    payload.human_player_id = Number(document.getElementById("humanPlayerId").value || 1);
   }
-  await api("/api/session", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  state.lastSequence = 0;
-  state.events = [];
-  await refreshAll();
+  return payload;
 }
 
-async function startSession() {
-  await api("/api/session/start", { method: "POST" });
-  await refreshAll();
+async function createAndStartGame(mode) {
+  if (state.busy) return;
+  state.busy = true;
+  setHint(mode === "observer" ? "正在启动上帝后台..." : "正在启动玩家参与对局...");
+  try {
+    await api("/api/session", {
+      method: "POST",
+      body: JSON.stringify(buildCreatePayload(mode)),
+    });
+    await api("/api/session/start", { method: "POST" });
+    state.events = [];
+    state.lastSequence = 0;
+    setHint("对局已启动。", false);
+    await refreshAll();
+  } catch (error) {
+    setHint(`启动失败：${error.message}`, true);
+  } finally {
+    state.busy = false;
+  }
+}
+
+async function joinGame() {
+  try {
+    await api("/api/session/join", { method: "POST", body: JSON.stringify({}) });
+  } catch (error) {
+    setHint(`加入游戏暂未开放：${error.message}`, true);
+  }
+}
+
+async function submitPlayerInput(contentOverride = null) {
+  const pending = state.snapshot?.pending_input;
+  if (!pending) {
+    setHint("当前没有等待中的输入请求。", true);
+    return;
+  }
+
+  const content = contentOverride !== null ? contentOverride : document.getElementById("playerInputBox").value.trim();
+  try {
+    await api("/api/input", {
+      method: "POST",
+      body: JSON.stringify({
+        request_id: pending.request_id,
+        player_id: state.session?.human_player_id,
+        content,
+      }),
+    });
+    setHint("输入已提交，游戏将继续推进。", false);
+    document.getElementById("playerInputBox").value = "";
+    await refreshAll();
+  } catch (error) {
+    setHint(`提交失败：${error.message}`, true);
+  }
 }
 
 async function refreshSession() {
@@ -70,9 +118,9 @@ async function refreshSession() {
     if (error.code === "SESSION_NOT_FOUND") {
       state.session = null;
       state.snapshot = null;
+      state.review = null;
       state.events = [];
       state.lastSequence = 0;
-      document.getElementById("errorBox").textContent = "No active session yet";
       return false;
     }
     throw error;
@@ -80,101 +128,111 @@ async function refreshSession() {
 }
 
 async function refreshState() {
-  state.snapshot = await api("/api/state?view_type=god");
+  if (!state.session) return;
+  if (state.session.mode === "player") {
+    state.snapshot = await api(`/api/state?view_type=player&viewer_player_id=${state.session.human_player_id}`);
+  } else {
+    state.snapshot = await api("/api/state?view_type=god");
+  }
 }
 
 async function refreshEvents() {
-  const data = await api(`/api/events?last_sequence=${state.lastSequence}&limit=200`);
+  if (!state.session) return;
+  let path = `/api/events?last_sequence=${state.lastSequence}&limit=200`;
+  if (state.session.mode === "player") {
+    path += `&view_type=player&viewer_player_id=${state.session.human_player_id}`;
+  } else {
+    path += "&view_type=god";
+  }
+  const data = await api(path);
   state.lastSequence = data.last_sequence || state.lastSequence;
   if (data.window_expired) {
     state.events = [];
   }
   state.events.push(...(data.events || []));
-  state.events = state.events.slice(-300);
+  state.events = state.events.slice(-500);
 }
 
 async function refreshReview() {
-  const review = await api("/api/review");
-  renderReview(review);
+  if (!state.session) return;
+  state.review = await api("/api/review");
 }
 
-function renderSessionAndState() {
-  const snapshot = state.snapshot;
-  const session = state.session;
-  if (!snapshot || !session) {
+async function refreshAll() {
+  try {
+    const hasSession = await refreshSession();
+    if (!hasSession) {
+      showScreen("landingPage");
+      renderLanding();
+      return;
+    }
+    await refreshState();
+    await refreshEvents();
+    await refreshReview();
+    renderApp();
+  } catch (error) {
+    setHint(`刷新失败：${error.message}`, true);
+  }
+}
+
+function renderApp() {
+  if (!state.session) {
+    showScreen("landingPage");
+    renderLanding();
     return;
   }
 
-  document.getElementById("sessionId").textContent = session.session_id || "-";
+  const lifecycle = state.snapshot?.lifecycle_status || state.session.lifecycle_status;
+  if (["finished", "review_running", "review_ready"].includes(lifecycle)) {
+    showScreen("reviewPage");
+    renderReviewPage();
+    return;
+  }
+
+  showScreen("gamePage");
+  renderGamePage();
+}
+
+function renderLanding() {
+  const hint = document.getElementById("landingHint");
+  if (hint && !state.session) {
+    hint.textContent = state.latestHint || "";
+  }
+}
+
+function renderGamePage() {
+  const snapshot = state.snapshot || {};
+  document.getElementById("sessionId").textContent = state.session?.session_id || "-";
   document.getElementById("gameId").textContent = snapshot.game_id || "-";
-  document.getElementById("lifecycleStatus").textContent = snapshot.lifecycle_status || "-";
-  document.getElementById("phase").textContent = snapshot.phase || "-";
-  document.getElementById("dayNight").textContent = `${snapshot.day_number || 0} / ${snapshot.night_number || 0}`;
-  document.getElementById("presidentId").textContent = snapshot.president_id ?? "-";
-  document.getElementById("aliveCount").textContent = (snapshot.alive_player_ids || []).length;
+  document.getElementById("modeText").textContent = state.session?.mode === "player" ? "玩家参与" : "上帝后台";
+  document.getElementById("phaseText").textContent = describePhase(snapshot.phase || "-");
+  document.getElementById("dayNightText").textContent = `${snapshot.day_number || 0} / ${snapshot.night_number || 0}`;
+  document.getElementById("lifecycleText").textContent = snapshot.lifecycle_status || "-";
 
-  const tbody = document.getElementById("playersBody");
-  tbody.innerHTML = "";
-  for (const player of snapshot.players || []) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${player.player_id}</td>
-      <td>${player.is_alive ? "Alive" : "Dead"}</td>
-      <td>${player.role || "-"}</td>
-      <td>${player.camp || "-"}</td>
-      <td>${player.is_president ? "Yes" : ""}</td>
-    `;
-    tbody.appendChild(tr);
-  }
+  const isPlayer = state.session?.mode === "player";
+  document.getElementById("playerSidePanel").style.display = isPlayer ? "block" : "none";
+  document.getElementById("observerSidePanel").style.display = isPlayer ? "none" : "block";
 
-  const pending = snapshot.pending_input ? JSON.stringify(snapshot.pending_input, null, 2) : "No pending input";
-  const errorText = snapshot.lifecycle_status === "error"
-    ? JSON.stringify(snapshot.meta || {}, null, 2)
-    : pending;
-  document.getElementById("errorBox").textContent = errorText;
-}
-
-function classifyEvent(event) {
-  const type = event.event_type;
-  if (SPEECH_EVENT_TYPES.has(type)) return "speech";
-  if (["vote", "vote_result", "president_changed"].includes(type)) return "vote";
-  if (["night_action_result", "death"].includes(type)) return "night";
-  return "system";
-}
-
-function renderEvents() {
-  const filter = document.getElementById("eventFilter").value;
-  const container = document.getElementById("timeline");
-  container.innerHTML = "";
-  const events = [...state.events].reverse().filter((event) => filter === "all" || classifyEvent(event) === filter);
-  for (const event of events) {
-    const div = document.createElement("div");
-    div.className = "timeline-item";
-    div.innerHTML = `
-      <div class="timeline-head">
-        <span class="badge">${event.event_type}</span>
-        <span class="sequence">#${event.sequence}</span>
-      </div>
-      <div class="timeline-time">${event.timestamp || "-"}</div>
-      <pre>${JSON.stringify(event.payload, null, 2)}</pre>
-    `;
-    container.appendChild(div);
+  renderChatFeed();
+  if (isPlayer) {
+    renderAssistant();
+  } else {
+    renderObserverPanel();
   }
 }
 
-function renderSpeechFeed() {
-  const container = document.getElementById("speechFeed");
-  container.innerHTML = "";
-
-  const chatEntries = buildChatEntries(state.events);
-  if (!chatEntries.length) {
-    container.innerHTML = `<div class="chat-empty">${u("\u5f53\u524d\u8fd8\u6ca1\u6709\u53ef\u5c55\u793a\u7684\u804a\u5929\u6d88\u606f\u3002")}</div>`;
+function renderChatFeed() {
+  const feed = document.getElementById("chatFeed");
+  feed.innerHTML = "";
+  const entries = buildChatEntries(state.events);
+  if (!entries.length) {
+    feed.innerHTML = `<div class="empty-box">当前还没有可展示的消息。</div>`;
     return;
   }
 
-  for (const entry of chatEntries) {
+  for (const entry of entries) {
     const item = document.createElement("div");
-    item.className = "chat-item";
+    item.className = `chat-item ${entry.system ? "system" : ""}`;
     item.innerHTML = `
       <div class="chat-avatar">${entry.avatar}</div>
       <div class="chat-main">
@@ -186,14 +244,127 @@ function renderSpeechFeed() {
         <div class="chat-bubble">${escapeHtml(entry.content)}</div>
       </div>
     `;
-    container.appendChild(item);
+    feed.appendChild(item);
   }
+  feed.scrollTop = feed.scrollHeight;
+}
+
+function renderAssistant() {
+  const pending = state.snapshot?.pending_input;
+  const privateInfo = state.snapshot?.private_info;
+  const privateBox = document.getElementById("assistantPrivateInfo");
+  const stateBox = document.getElementById("assistantState");
+  const suggestionBox = document.getElementById("assistantSuggestion");
+  const hintBox = document.getElementById("assistantHint");
+  const inputBox = document.getElementById("playerInputBox");
+  const useBtn = document.getElementById("useSuggestionBtn");
+  const submitBtn = document.getElementById("submitInputBtn");
+
+  privateBox.innerHTML = renderPrivateInfo(privateInfo);
+
+  if (!pending) {
+    stateBox.innerHTML = `<strong>当前状态</strong><div>游戏正在自动推进，暂时不需要你的输入。</div>`;
+    suggestionBox.innerHTML = `<strong>Agent 建议</strong><div class="empty-box">轮到你时，这里会显示 Agent 给出的建议。</div>`;
+    hintBox.textContent = state.latestHint || "等待下一次决策节点...";
+    inputBox.value = "";
+    inputBox.disabled = true;
+    useBtn.disabled = true;
+    submitBtn.disabled = true;
+    inputBox.placeholder = "轮到你时再输入...";
+    return;
+  }
+
+  const secondsLeft = Math.max(0, pending.expires_at - Date.now() / 1000).toFixed(1);
+  stateBox.innerHTML = `
+    <strong>${escapeHtml(describeInputType(pending.input_type))}</strong>
+    <div>${escapeHtml(pending.prompt || "")}</div>
+    <div class="muted">剩余时间：${secondsLeft} 秒</div>
+  `;
+  suggestionBox.innerHTML = `
+    <strong>Agent 建议</strong>
+    <div>${escapeHtml(pending.suggestion_label || "-")}</div>
+  `;
+  hintBox.textContent = state.latestHint || "你可以直接采用建议，也可以自己输入。超时会自动采用 Agent 建议。";
+  inputBox.disabled = false;
+  useBtn.disabled = false;
+  submitBtn.disabled = false;
+  inputBox.placeholder = getInputPlaceholder(pending.input_type);
+}
+
+function renderObserverPanel() {
+  const snapshot = state.snapshot || {};
+  const players = snapshot.players || [];
+  const aliveCount = players.filter((player) => player.is_alive).length;
+  const deadCount = players.length - aliveCount;
+  document.getElementById("observerSummary").innerHTML = `
+    <strong>运行状态</strong>
+    <p>生命周期：${escapeHtml(snapshot.lifecycle_status || "-")}</p>
+    <p>阶段：${escapeHtml(describePhase(snapshot.phase || "-"))}</p>
+    <p>存活：${aliveCount}，死亡：${deadCount}</p>
+    <p>警长：${snapshot.president_id ? `${snapshot.president_id}号` : "无"}</p>
+  `;
+  document.getElementById("observerPlayers").innerHTML = `
+    <strong>玩家状态</strong>
+    <ul>${players.map((player) => `<li>${buildAvatar(player.player_id, player)} ${player.player_id}号 ${formatRole(player.role)} ${player.camp || ""} ${player.is_president ? "警长" : ""} ${player.is_alive ? "存活" : "死亡"}</li>`).join("")}</ul>
+  `;
+  const review = state.review || {};
+  document.getElementById("observerReview").innerHTML = `
+    <strong>复盘状态</strong>
+    <p>状态：${escapeHtml(review.status || "-")}</p>
+    <p>报告：${escapeHtml(review.paths?.markdown || "-")}</p>
+    <p>错误：${escapeHtml(review.error || "-")}</p>
+  `;
+}
+
+function renderReviewPage() {
+  const result = state.snapshot?.result || {};
+  const review = state.review || {};
+  document.getElementById("resultSummary").innerHTML = `
+    <h3>胜负结果</h3>
+    <p>胜利阵营：${escapeHtml(result.winner || "-")}</p>
+    <p>结束原因：${escapeHtml(result.reason || "-")}</p>
+  `;
+  document.getElementById("reviewSummary").innerHTML = `
+    <h3>复盘摘要</h3>
+    <p>${escapeHtml(review.summary || "复盘尚未生成完成。")}</p>
+  `;
+  document.getElementById("reviewStatusBox").innerHTML = `
+    <p>状态：<span class="status-pill">${escapeHtml(review.status || "-")}</span></p>
+    <p>Markdown：${escapeHtml(review.paths?.markdown || "-")}</p>
+    <p>JSON：${escapeHtml(review.paths?.json || "-")}</p>
+    <p>错误：${escapeHtml(review.error || "-")}</p>
+  `;
+}
+
+function renderPrivateInfo(privateInfo) {
+  if (!privateInfo) {
+    return `<strong>你的私有信息</strong><div class="empty-box">当前没有可展示的私有信息。</div>`;
+  }
+
+  const lines = [];
+  lines.push(`身份：${formatRole(privateInfo.role)}`);
+  lines.push(`阵营：${privateInfo.camp || "-"}`);
+
+  if (privateInfo.wolf_teammates?.length) {
+    lines.push(`狼人队友：${privateInfo.wolf_teammates.map((item) => `${item.player_id}号${item.is_alive ? "" : "（已死亡）"}`).join("、")}`);
+  }
+  if (privateInfo.checked_results?.length) {
+    lines.push(`查验结果：${privateInfo.checked_results.map((item) => `${item.player_id}号=${formatRole(item.role)}${item.is_alive ? "" : "（已死亡）"}`).join("、")}`);
+  }
+  if (privateInfo.guarded_players?.length) {
+    lines.push(`最近守护：${privateInfo.guarded_players.map((item) => `${item}号`).join("、")}`);
+  }
+  if (privateInfo.role === "witch") {
+    lines.push(`解药：${privateInfo.heal_used ? "已使用" : "未使用"}`);
+    lines.push(`毒药：${privateInfo.poison_used ? "已使用" : "未使用"}`);
+  }
+
+  return `<strong>你的私有信息</strong><ul>${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>`;
 }
 
 function buildChatEntries(events) {
   const entries = [];
-  for (let index = 0; index < events.length; index += 1) {
-    const event = events[index];
+  for (const event of events) {
     if (SPEECH_EVENT_TYPES.has(event.event_type)) {
       const playerId = event.payload?.player_id;
       const player = getPlayerById(playerId);
@@ -201,8 +372,9 @@ function buildChatEntries(events) {
         avatar: buildAvatar(playerId, player),
         name: buildPlayerLabel(playerId, player),
         tag: getSpeechTag(event.event_type),
-        timestamp: event.timestamp || "-",
+        timestamp: formatTimestamp(event.timestamp),
         content: event.payload?.content || "",
+        system: false,
       });
       continue;
     }
@@ -210,21 +382,106 @@ function buildChatEntries(events) {
     if (!CHAT_SYSTEM_EVENT_TYPES.has(event.event_type)) {
       continue;
     }
-
-    const message = buildSystemMessage(event, index, events);
+    const message = buildSystemMessage(event, events);
     if (!message) {
       continue;
     }
-
     entries.push({
-      avatar: "\uD83D\uDCE3",
-      name: u("\u7cfb\u7edf\u6d88\u606f"),
+      avatar: "📢",
+      name: "系统消息",
       tag: message.tag,
-      timestamp: event.timestamp || "-",
+      timestamp: formatTimestamp(event.timestamp),
       content: message.content,
+      system: true,
     });
   }
   return entries;
+}
+
+function buildSystemMessage(event, events) {
+  const payload = event.payload || {};
+  if (event.event_type === "phase_changed") {
+    return buildPhaseChangedMessage(payload, events, event.sequence);
+  }
+  if (event.event_type === "vote_result") {
+    if (payload.eliminated) return { tag: "系统播报", content: `${payload.eliminated}号玩家被放逐出局。` };
+    if (payload.is_tie) return { tag: "系统播报", content: `投票出现平票，候选玩家为：${formatCandidates(payload.candidates)}。` };
+  }
+  if (event.event_type === "death") {
+    const cause = describeDeathCause(payload.cause);
+    return { tag: "系统播报", content: cause ? `${payload.player_id}号玩家死亡，原因：${cause}。` : `${payload.player_id}号玩家死亡。` };
+  }
+  if (event.event_type === "president_changed") {
+    return payload.president_id
+      ? { tag: "警长变更", content: `${payload.president_id}号玩家成为警长。` }
+      : { tag: "警长变更", content: "当前没有警长。" };
+  }
+  if (event.event_type === "game_finished") {
+    return { tag: "游戏结束", content: `游戏结束，胜利阵营：${payload.winner_camp || payload.winner || "未知"}。` };
+  }
+  if (event.event_type === "player_input_timeout") {
+    return { tag: "系统播报", content: `${payload.player_id}号玩家超时，系统已采用 Agent 建议。` };
+  }
+  if (event.event_type === "player_input_received") {
+    return { tag: "系统播报", content: `${payload.player_id}号玩家已提交输入。` };
+  }
+  return null;
+}
+
+function buildPhaseChangedMessage(payload, events, sequence) {
+  const phase = payload.phase;
+  const dayNumber = payload.day_number;
+  const nightNumber = payload.night_number;
+  const details = payload.details || {};
+
+  if (phase === "president_election_speech") return { tag: "系统播报", content: `开始警长竞选发言，参选玩家：${formatCandidates(details.candidates)}。` };
+  if (phase === "president_election_vote") return { tag: "系统播报", content: `警长竞选发言结束，开始投票，候选玩家：${formatCandidates(details.candidates)}。` };
+  if (phase === "president_election_pk") return { tag: "系统播报", content: `警长竞选进入 PK，候选玩家：${formatCandidates(details.candidates)}。` };
+  if (phase === "day_discussion") {
+    const nightDeaths = collectNightDeaths(events, sequence);
+    if (nightDeaths.length) return { tag: "天亮了", content: `第${dayNumber || "?"}天开始。昨夜死亡玩家：${nightDeaths.map((id) => `${id}号`).join("、")}。` };
+    return { tag: "天亮了", content: `第${dayNumber || "?"}天开始。昨夜是平安夜。` };
+  }
+  if (phase === "day_vote") return { tag: "系统播报", content: `第${dayNumber || "?"}天开始投票。` };
+  if (phase === "day_vote_pk") return { tag: "系统播报", content: `投票进入 PK 环节，候选玩家：${formatCandidates(details.candidates)}。` };
+  if (phase === "last_words" && details.player_id) return { tag: "系统播报", content: `${details.player_id}号玩家开始发表遗言。` };
+  if (phase === "night_guard") return { tag: "入夜了", content: `第${nightNumber || "?"}夜开始，守卫行动。` };
+  if (phase === "night_wolf") return { tag: "入夜了", content: `第${nightNumber || "?"}夜，狼人开始行动。` };
+  if (phase === "night_witch") return { tag: "入夜了", content: `第${nightNumber || "?"}夜，女巫开始行动。` };
+  if (phase === "night_seer") return { tag: "入夜了", content: `第${nightNumber || "?"}夜，预言家开始行动。` };
+  if (phase === "hunter_skill") return { tag: "系统播报", content: "猎人技能阶段开始。" };
+  if (phase === "game_over") return { tag: "游戏结束", content: "对局结束，正在等待最终结果。" };
+  return null;
+}
+
+function collectNightDeaths(events, sequence) {
+  const deaths = [];
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.sequence >= sequence) continue;
+    if (event.event_type === "phase_changed" && event.payload?.phase === "day_discussion") break;
+    if (event.event_type === "death" && event.payload?.player_id) deaths.push(event.payload.player_id);
+  }
+  return [...new Set(deaths)].reverse();
+}
+
+function formatCandidates(candidates) {
+  const items = Array.isArray(candidates) ? candidates : [];
+  if (!items.length) return "暂无";
+  return items.map((id) => `${id}号`).join("、");
+}
+
+function describeDeathCause(cause) {
+  const causeMap = {
+    vote_out: "投票放逐",
+    wolf_attack: "狼人袭击",
+    poison: "女巫毒杀",
+    hunter_shot: "猎人开枪",
+    self_explode: "狼人自爆",
+    duel: "决斗出局",
+    same_night_save_conflict: "同守同救冲突",
+  };
+  return causeMap[String(cause || "").toLowerCase()] || String(cause || "");
 }
 
 function getPlayerById(playerId) {
@@ -233,237 +490,125 @@ function getPlayerById(playerId) {
 
 function buildAvatar(playerId, player) {
   const role = player?.role;
-  const iconMap = {
-    werewolf: ["\uD83D\uDC3A", "\uD83D\uDC15", "\uD83D\uDC3B", "\uD83D\uDC08"],
-    villager: ["\uD83D\uDE42", "\uD83D\uDE0A", "\uD83D\uDE04", "\uD83E\uDDD1"],
-    seer: ["\uD83D\uDD2E", "\u2728"],
-    witch: ["\uD83E\uDDEA", "\u2697\uFE0F"],
-    hunter: ["\uD83D\uDD2B", "\uD83C\uDFF9"],
-    guard: ["\uD83D\uDEE1\uFE0F", "\uD83E\uDE96"],
+  const knownIcons = {
+    werewolf: ["🐺", "🐕", "🐻", "🐱"],
+    villager: ["🙂", "😊", "😄", "🧑"],
+    seer: ["🔮", "✨"],
+    witch: ["🧪", "🌿"],
+    hunter: ["🎯", "🏹"],
+    guard: ["🛡️", "🚪"],
   };
-  const icons = iconMap[role] || ["\uD83D\uDC64", "\uD83D\uDC65", "\uD83D\uDC64"];
-  const iconIndex = playerId ? (playerId - 1) % icons.length : 0;
-  return icons[iconIndex];
+  const unknownIcons = ["😶", "😑", "🫥", "👤", "🧍", "🧍‍♂️"];
+  const icons = knownIcons[role] || unknownIcons;
+  const index = playerId ? (playerId - 1) % icons.length : 0;
+  return icons[index];
 }
 
 function buildPlayerLabel(playerId, player) {
-  const role = player?.role ? ` ${u("\u00b7")} ${player.role}` : "";
-  const dead = player && !player.is_alive ? ` ${u("\u00b7")} ${u("\u5df2\u6b7b\u4ea1")}` : "";
-  return `${playerId ?? "?"}${u("\u53f7\u73a9\u5bb6")}${role}${dead}`;
+  const dead = player && !player.is_alive ? " · 已死亡" : "";
+  if (playerId === state.session?.human_player_id) return `${playerId}号玩家（你）${dead}`;
+  return `${playerId}号玩家${dead}`;
 }
 
 function getSpeechTag(eventType) {
   const tagMap = {
-    speech: u("\u767d\u5929\u53d1\u8a00"),
-    pk_speech: "PK " + u("\u53d1\u8a00"),
-    president_candidate_speech: u("\u7ade\u9009\u53d1\u8a00"),
-    president_pk_speech: u("\u8b66\u957f PK"),
-    last_words: u("\u9057\u8a00"),
+    speech: "白天发言",
+    pk_speech: "PK 发言",
+    president_candidate_speech: "竞选发言",
+    president_pk_speech: "警长 PK",
+    last_words: "遗言",
   };
   return tagMap[eventType] || eventType;
 }
 
-function buildSystemMessage(event, index, events) {
-  const payload = event.payload || {};
-
-  if (event.event_type === "phase_changed") {
-    return buildPhaseChangedMessage(payload, index, events);
-  }
-
-  if (event.event_type === "vote_result") {
-    if (payload.eliminated) {
-      return {
-        tag: u("\u7cfb\u7edf\u64ad\u62a5"),
-        content: `${payload.eliminated}${u("\u53f7\u73a9\u5bb6\u88ab\u653e\u9010\u51fa\u5c40\u3002")}`,
-      };
-    }
-    if (payload.is_tie) {
-      return {
-        tag: u("\u7cfb\u7edf\u64ad\u62a5"),
-        content: `${u("\u6295\u7968\u51fa\u73b0\u5e73\u7968\uff0c\u5019\u9009\u73a9\u5bb6\u4e3a\uff1a")}${formatCandidates(payload.candidates)}${u("\u3002")}`,
-      };
-    }
-    return null;
-  }
-
-  if (event.event_type === "death") {
-    const playerId = payload.player_id;
-    if (!playerId) {
-      return null;
-    }
-    const cause = describeDeathCause(payload.cause);
-    return {
-      tag: u("\u7cfb\u7edf\u64ad\u62a5"),
-      content: cause
-        ? `${playerId}${u("\u53f7\u73a9\u5bb6\u6b7b\u4ea1\uff0c\u539f\u56e0\uff1a")}${cause}${u("\u3002")}`
-        : `${playerId}${u("\u53f7\u73a9\u5bb6\u6b7b\u4ea1\u3002")}`,
-    };
-  }
-
-  if (event.event_type === "president_changed") {
-    if (payload.president_id) {
-      return {
-        tag: u("\u8b66\u957f\u53d8\u66f4"),
-        content: `${payload.president_id}${u("\u53f7\u73a9\u5bb6\u6210\u4e3a\u8b66\u957f\u3002")}`,
-      };
-    }
-    return {
-      tag: u("\u8b66\u957f\u53d8\u66f4"),
-      content: u("\u5f53\u524d\u6ca1\u6709\u8b66\u957f\u3002"),
-    };
-  }
-
-  if (event.event_type === "game_finished") {
-    const winner = payload.winner_camp || payload.winner || u("\u672a\u77e5");
-    return {
-      tag: u("\u6e38\u620f\u7ed3\u675f"),
-      content: `${u("\u6e38\u620f\u7ed3\u675f\uff0c\u80dc\u5229\u9635\u8425\uff1a")}${winner}${u("\u3002")}`,
-    };
-  }
-
-  return null;
-}
-
-function buildPhaseChangedMessage(payload, index, events) {
-  const phase = payload.phase;
-  const dayNumber = payload.day_number;
-  const nightNumber = payload.night_number;
-  const details = payload.details || {};
-
-  if (phase === "president_election_speech") {
-    return {
-      tag: u("\u7cfb\u7edf\u64ad\u62a5"),
-      content: `${u("\u5f00\u59cb\u8b66\u957f\u7ade\u9009\u53d1\u8a00\uff0c\u53c2\u9009\u73a9\u5bb6\uff1a")}${formatCandidates(details.candidates)}${u("\u3002")}`,
-    };
-  }
-
-  if (phase === "president_election_vote") {
-    return {
-      tag: u("\u7cfb\u7edf\u64ad\u62a5"),
-      content: `${u("\u8b66\u957f\u7ade\u9009\u53d1\u8a00\u7ed3\u675f\uff0c\u5f00\u59cb\u6295\u7968\uff0c\u5019\u9009\u73a9\u5bb6\uff1a")}${formatCandidates(details.candidates)}${u("\u3002")}`,
-    };
-  }
-
-  if (phase === "president_election_pk") {
-    return {
-      tag: u("\u7cfb\u7edf\u64ad\u62a5"),
-      content: `${u("\u8b66\u957f\u7ade\u9009\u8fdb\u5165 PK\uff0c\u5019\u9009\u73a9\u5bb6\uff1a")}${formatCandidates(details.candidates)}${u("\u3002")}`,
-    };
-  }
-
-  if (phase === "day_discussion") {
-    const nightDeaths = collectNightDeaths(index, events);
-    if (nightDeaths.length) {
-      return {
-        tag: u("\u5929\u4eae\u4e86"),
-        content: `${u("\u7b2c")}${dayNumber || "?"}${u("\u5929\u5f00\u59cb\u3002\u6628\u591c\u6b7b\u4ea1\u73a9\u5bb6\uff1a")}${nightDeaths.map((playerId) => `${playerId}${u("\u53f7")}`).join(u("\u3001"))}${u("\u3002")}`,
-      };
-    }
-    return {
-      tag: u("\u5929\u4eae\u4e86"),
-      content: `${u("\u7b2c")}${dayNumber || "?"}${u("\u5929\u5f00\u59cb\u3002\u6628\u591c\u662f\u5e73\u5b89\u591c\u3002")}`,
-    };
-  }
-
-  if (phase === "day_vote") {
-    return {
-      tag: u("\u7cfb\u7edf\u64ad\u62a5"),
-      content: `${u("\u7b2c")}${dayNumber || "?"}${u("\u5929\u5f00\u59cb\u6295\u7968\u3002")}`,
-    };
-  }
-
-  if (phase === "day_vote_pk") {
-    return {
-      tag: u("\u7cfb\u7edf\u64ad\u62a5"),
-      content: `${u("\u6295\u7968\u8fdb\u5165 PK \u73af\u8282\uff0c\u5019\u9009\u73a9\u5bb6\uff1a")}${formatCandidates(details.candidates)}${u("\u3002")}`,
-    };
-  }
-
-  if (phase === "last_words" && details.player_id) {
-    return {
-      tag: u("\u7cfb\u7edf\u64ad\u62a5"),
-      content: `${details.player_id}${u("\u53f7\u73a9\u5bb6\u5f00\u59cb\u53d1\u8868\u9057\u8a00\u3002")}`,
-    };
-  }
-
-  if (phase === "night_guard") {
-    return {
-      tag: u("\u5165\u591c\u4e86"),
-      content: `${u("\u7b2c")}${nightNumber || "?"}${u("\u591c\u5f00\u59cb\uff0c\u5b88\u536b\u884c\u52a8\u3002")}`,
-    };
-  }
-
-  if (phase === "night_wolf") {
-    return {
-      tag: u("\u5165\u591c\u4e86"),
-      content: `${u("\u7b2c")}${nightNumber || "?"}${u("\u591c\uff0c\u72fc\u4eba\u5f00\u59cb\u884c\u52a8\u3002")}`,
-    };
-  }
-
-  if (phase === "night_witch") {
-    return {
-      tag: u("\u5165\u591c\u4e86"),
-      content: `${u("\u7b2c")}${nightNumber || "?"}${u("\u591c\uff0c\u5973\u5deb\u5f00\u59cb\u884c\u52a8\u3002")}`,
-    };
-  }
-
-  if (phase === "night_seer") {
-    return {
-      tag: u("\u5165\u591c\u4e86"),
-      content: `${u("\u7b2c")}${nightNumber || "?"}${u("\u591c\uff0c\u9884\u8A00\u5BB6\u5F00\u59CB\u884C\u52A8\u3002")}`,
-    };
-  }
-
-  if (phase === "hunter_skill" && details.player_id) {
-    return {
-      tag: u("\u7cfb\u7edf\u64ad\u62a5"),
-      content: `${details.player_id}${u("\u53f7\u730E\u4EBA\u53D1\u52A8\u6280\u80FD\u3002")}`,
-    };
-  }
-
-  if (phase === "game_over") {
-    return {
-      tag: u("\u6e38\u620f\u7ed3\u675f"),
-      content: u("\u5bf9\u5c40\u7ed3\u675f\uff0c\u6b63\u5728\u7b49\u5f85\u6700\u7ec8\u7ed3\u679c\u3002"),
-    };
-  }
-
-  return null;
-}
-
-function collectNightDeaths(currentIndex, events) {
-  const deaths = [];
-  for (let index = currentIndex - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event.event_type === "phase_changed" && event.payload?.phase === "day_discussion") {
-      break;
-    }
-    if (event.event_type === "death" && event.payload?.player_id) {
-      deaths.push(event.payload.player_id);
-    }
-  }
-  return [...new Set(deaths)].reverse();
-}
-
-function formatCandidates(candidates) {
-  const items = Array.isArray(candidates) ? candidates : [];
-  if (!items.length) {
-    return u("\u6682\u65E0");
-  }
-  return items.map((playerId) => `${playerId}${u("\u53f7")}`).join(u("\u3001"));
-}
-
-function describeDeathCause(cause) {
-  const causeMap = {
-    vote_out: u("\u6295\u7968\u653E\u9010"),
-    wolf_attack: u("\u72FC\u4EBA\u88AD\u51FB"),
-    poison: u("\u5973\u5DEB\u6BD2\u6740"),
-    hunter_shot: u("\u730E\u4EBA\u5F00\u67AA"),
-    self_explode: u("\u72FC\u4EBA\u81EA\u7206"),
-    duel: u("\u51B3\u6597\u51FA\u5C40"),
-    same_night_save_conflict: u("\u540C\u5B88\u540C\u6551\u51B2\u7A81"),
+function describeInputType(inputType) {
+  const map = {
+    day_speech: "轮到你白天发言",
+    last_words: "轮到你发表遗言",
+    day_vote: "轮到你投票",
+    guard_action: "轮到你守护",
+    wolf_action: "轮到你选择狼人目标",
+    witch_action: "轮到你使用女巫技能",
+    seer_action: "轮到你查验",
+    hunter_skill: "轮到你发动猎人技能",
+    president_speech: "轮到你竞选警长发言",
+    president_vote: "轮到你进行警长投票",
+    president_pk_speech: "轮到你进行警长 PK 发言",
   };
-  return causeMap[String(cause || "").toLowerCase()] || String(cause || "");
+  return map[inputType] || inputType;
+}
+
+function getInputPlaceholder(inputType) {
+  const map = {
+    day_speech: "输入你的发言内容...",
+    last_words: "输入你的遗言...",
+    day_vote: "输入玩家编号，例如 3；或输入 pass 弃票",
+    guard_action: "输入守护目标编号；或输入 pass",
+    wolf_action: "输入袭击目标编号；或输入 pass",
+    witch_action: "输入 save、poison 3、save poison 4 或 pass",
+    seer_action: "输入查验目标编号；或输入 pass",
+    hunter_skill: "输入带走目标编号；或输入 pass",
+    president_speech: "输入你的竞选发言内容...",
+    president_vote: "输入候选玩家编号；或输入 pass",
+    president_pk_speech: "输入你的 PK 发言内容...",
+  };
+  return map[inputType] || "输入你的内容...";
+}
+
+function describePhase(phase) {
+  const map = {
+    setup: "准备中",
+    president_election_speech: "警长竞选发言",
+    president_election_vote: "警长竞选投票",
+    president_election_pk: "警长竞选 PK",
+    day_discussion: "白天讨论",
+    day_vote: "白天投票",
+    day_vote_pk: "白天 PK",
+    last_words: "遗言",
+    night_guard: "守卫行动",
+    night_wolf: "狼人行动",
+    night_witch: "女巫行动",
+    night_seer: "预言家行动",
+    hunter_skill: "猎人技能",
+    game_over: "游戏结束",
+  };
+  return map[phase] || phase || "-";
+}
+
+function formatRole(role) {
+  const map = {
+    werewolf: "狼人",
+    villager: "村民",
+    seer: "预言家",
+    witch: "女巫",
+    hunter: "猎人",
+    guard: "守卫",
+  };
+  return map[role] || role || "-";
+}
+
+function formatTimestamp(timestamp) {
+  if (!timestamp) return "-";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  return date.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function showScreen(screenId) {
+  for (const element of document.querySelectorAll(".screen")) {
+    element.classList.toggle("active", element.id === screenId);
+  }
+}
+
+function setHint(message, isError = false) {
+  state.latestHint = message;
+  const landingHint = document.getElementById("landingHint");
+  const assistantHint = document.getElementById("assistantHint");
+  for (const hintBox of [landingHint, assistantHint]) {
+    if (!hintBox) continue;
+    hintBox.textContent = message;
+    hintBox.style.color = isError ? "#a2341e" : "";
+  }
 }
 
 function escapeHtml(text) {
@@ -471,61 +616,30 @@ function escapeHtml(text) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
+    .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
 
-function renderReview(review) {
-  const box = document.getElementById("reviewStatus");
-  box.innerHTML = `
-    <p><strong>Status:</strong> ${review.status || "-"}</p>
-    <p><strong>Summary:</strong> ${review.summary || "-"}</p>
-    <p><strong>Paths:</strong> ${review.paths ? JSON.stringify(review.paths) : "-"}</p>
-    <p><strong>Error:</strong> ${review.error || "-"}</p>
-  `;
+function restartPolling() {
+  if (state.refreshTimer) clearInterval(state.refreshTimer);
+  state.refreshTimer = setInterval(refreshAll, 300);
 }
 
-function renderFatalError(error) {
-  const detail = error.details && Object.keys(error.details).length
-    ? `\n${JSON.stringify(error.details, null, 2)}`
-    : "";
-  document.getElementById("errorBox").textContent = `${error.message} [${error.code || "UNKNOWN_ERROR"}]${detail}`;
-}
-
-async function refreshAll() {
-  try {
-    const hasSession = await refreshSession();
-    if (!hasSession) {
-      renderEvents();
-      renderSpeechFeed();
-      renderReview({ status: "-", summary: "-", paths: null, error: null });
-      return;
-    }
-    await refreshState();
-    await refreshEvents();
-    await refreshReview();
-    renderSessionAndState();
-    renderEvents();
-    renderSpeechFeed();
-  } catch (error) {
-    renderFatalError(error);
-  }
-}
-
-function u(value) {
-  return value;
-}
-
-document.getElementById("createBtn").addEventListener("click", createSession);
-document.getElementById("startBtn").addEventListener("click", startSession);
-document.getElementById("refreshBtn").addEventListener("click", refreshAll);
-document.getElementById("eventFilter").addEventListener("change", renderEvents);
-
-document.getElementById("mode").addEventListener("change", (event) => {
-  const isPlayer = event.target.value === "player";
-  document.getElementById("humanPlayerId").disabled = !isPlayer;
+document.getElementById("startObserverBtn").addEventListener("click", () => createAndStartGame("observer"));
+document.getElementById("startPlayerBtn").addEventListener("click", () => createAndStartGame("player"));
+document.getElementById("joinGameBtn").addEventListener("click", joinGame);
+document.getElementById("globalRefreshBtn").addEventListener("click", refreshAll);
+document.getElementById("useSuggestionBtn").addEventListener("click", () => {
+  const pending = state.snapshot?.pending_input;
+  if (!pending) return;
+  document.getElementById("playerInputBox").value = pending.suggestion_submit_value || "";
+  submitPlayerInput(pending.suggestion_submit_value || "");
 });
-document.getElementById("humanPlayerId").disabled = true;
+document.getElementById("submitInputBtn").addEventListener("click", () => submitPlayerInput());
+document.getElementById("backToLandingBtn").addEventListener("click", () => {
+  showScreen("landingPage");
+  setHint("当前对局已结束。刷新页面可以重新创建对局。", false);
+});
 
-setInterval(refreshAll, 2500);
+restartPolling();
 refreshAll();

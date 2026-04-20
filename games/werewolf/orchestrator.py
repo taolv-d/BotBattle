@@ -25,7 +25,9 @@ class WerewolfOrchestrator:
     
     def __init__(self, config: GameConfig, llm_config: Dict[str, Any],
                  logger: LoggerService, tts: Optional[TTSInterface] = None,
-                 review_config: Optional[ReviewConfig] = None):
+                 review_config: Optional[ReviewConfig] = None,
+                 human_input_adapter: Optional[Any] = None,
+                 human_timeout_seconds: float = 1.0):
         """
         初始化游戏编排器
 
@@ -47,6 +49,8 @@ class WerewolfOrchestrator:
         self.self_explode_flag = False
         self.exploded_player_id = None
         self.review_task = None
+        self.human_input_adapter = human_input_adapter
+        self.human_timeout_seconds = human_timeout_seconds
 
         # 初始化复盘服务
         self.review_service = GameReviewService(config=review_config)
@@ -54,7 +58,117 @@ class WerewolfOrchestrator:
 
         # 初始化游戏
         self._init_game()
-    
+
+    def _is_human_player(self, player_id: int) -> bool:
+        player = self.state.players.get(player_id)
+        return bool(self.human_input_adapter and player and player.is_human)
+
+    async def _request_human_input(self, player_id: int, input_type: str, prompt: str, suggestion: Any, suggestion_label: str, suggestion_submit_value: str, *, options: Optional[List[int]] = None, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        if not self._is_human_player(player_id):
+            return {"status": "agent", "content": suggestion_submit_value}
+        self.logger.log_event("player_input_requested", {"player_id": player_id, "input_type": input_type, "phase": self.state.phase})
+        result = await self.human_input_adapter.request_input(
+            player_id=player_id,
+            input_type=input_type,
+            phase=self.state.phase,
+            prompt=prompt,
+            suggestion=suggestion,
+            suggestion_label=suggestion_label,
+            suggestion_submit_value=suggestion_submit_value,
+            options=options or [],
+            metadata=metadata or {},
+            timeout_seconds=self.human_timeout_seconds,
+        )
+        if result["status"] == "submitted":
+            content = str(result["payload"].get("content", "")).strip()
+            self.logger.log_event("player_input_received", {"player_id": player_id, "input_type": input_type, "phase": self.state.phase})
+            return {"status": "submitted", "content": content}
+        self.logger.log_event("player_input_timeout", {"player_id": player_id, "input_type": input_type, "phase": self.state.phase})
+        return {"status": "timeout", "content": suggestion_submit_value}
+
+    async def _resolve_human_speech(self, player_id: int, input_type: str, prompt: str, suggested_text: str, *, metadata: Optional[Dict[str, Any]] = None) -> str:
+        result = await self._request_human_input(player_id, input_type, prompt, suggested_text, suggested_text, suggested_text, metadata=metadata)
+        content = str(result.get("content", "")).strip()
+        return content or suggested_text
+
+    async def _resolve_human_target(self, player_id: int, input_type: str, prompt: str, suggested_target: Optional[int], allowed_targets: List[int], *, metadata: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        result = await self._request_human_input(
+            player_id,
+            input_type,
+            prompt,
+            suggested_target,
+            self._format_target_suggestion(suggested_target),
+            str(suggested_target) if suggested_target is not None else "pass",
+            options=allowed_targets,
+            metadata=metadata,
+        )
+        parsed = self._parse_optional_target(result.get("content"), allowed_targets)
+        if parsed is None and str(result.get("content", "")).strip().lower() in {"", "pass", "skip", "none", "null"}:
+            return None
+        return suggested_target if parsed is None else parsed
+
+    async def _resolve_human_witch_action(self, player_id: int, prompt: str, suggested_action: Dict[str, Any], allowed_targets: List[int], *, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        result = await self._request_human_input(
+            player_id,
+            "witch_action",
+            prompt,
+            suggested_action,
+            self._format_witch_suggestion(suggested_action),
+            self._format_witch_submit_value(suggested_action),
+            options=allowed_targets,
+            metadata=metadata,
+        )
+        return self._parse_witch_action(result.get("content"), suggested_action, allowed_targets)
+
+    def _parse_optional_target(self, raw_value: Any, allowed_targets: List[int]) -> Optional[int]:
+        text_value = str(raw_value or "").strip().lower()
+        if text_value in {"", "pass", "skip", "none", "null"}:
+            return None
+        digits = "".join(ch for ch in text_value if ch.isdigit())
+        if not digits:
+            return None
+        target = int(digits)
+        return target if target in allowed_targets else None
+
+    def _parse_witch_action(self, raw_value: Any, suggested_action: Dict[str, Any], allowed_targets: List[int]) -> Dict[str, Any]:
+        text_value = str(raw_value or "").strip().lower()
+        if text_value in {"", "pass", "skip", "none", "null"}:
+            return {"action": "none"}
+        if "dual" in text_value or ("save" in text_value and "poison" in text_value):
+            target = self._parse_optional_target(text_value, allowed_targets)
+            if target is not None:
+                return {"action": "dual", "poison_target": target}
+        if text_value.startswith("save") or text_value.startswith("heal"):
+            return {"action": "heal"}
+        if text_value.startswith("poison"):
+            target = self._parse_optional_target(text_value, allowed_targets)
+            if target is not None:
+                return {"action": "poison", "poison_target": target}
+        return suggested_action
+
+    def _format_target_suggestion(self, target: Optional[int]) -> str:
+        return "Agent suggests skipping this action." if target is None else f"Agent suggests choosing player {target}."
+
+    def _format_witch_suggestion(self, action: Dict[str, Any]) -> str:
+        action_name = action.get("action")
+        if action_name == "heal":
+            return "Agent suggests using the heal potion."
+        if action_name == "poison":
+            return f"Agent suggests poisoning player {action.get('poison_target')}."
+        if action_name == "dual":
+            return f"Agent suggests saving first, then poisoning player {action.get('poison_target')}."
+        return "Agent suggests not using any potion tonight."
+
+    def _format_witch_submit_value(self, action: Dict[str, Any]) -> str:
+        action_name = action.get("action")
+        if action_name == "heal":
+            return "save"
+        if action_name == "poison":
+            return f"poison {action.get('poison_target')}"
+        if action_name == "dual":
+            return f"save poison {action.get('poison_target')}"
+        return "pass"
+
     def _init_game(self):
         """初始化游戏"""
         self.state.game_id = f"werewolf_{random.randint(1000, 9999)}"
@@ -200,7 +314,14 @@ class WerewolfOrchestrator:
             self._set_phase("last_words", {"player_id": eliminated, "context": "day_vote"})
             
             # 发表遗言
-            speech = await self.agents[eliminated].make_last_words()
+            suggested_speech = await self.agents[eliminated].make_last_words()
+            speech = await self._resolve_human_speech(
+                eliminated,
+                "last_words",
+                "Please enter your speech now.",
+                suggested_speech,
+                metadata={"context": "day_vote"},
+            )
             self.logger.log_event("last_words", {
                 "player_id": eliminated,
                 "content": speech
@@ -267,13 +388,20 @@ class WerewolfOrchestrator:
                                    for pid, p in self.state.players.items()}
             })
             
-            speech = await self.agents[player_id].speak(context)
+            suggested_speech = await self.agents[player_id].speak(context)
+            speech = await self._resolve_human_speech(
+                player_id,
+                "day_speech",
+                "Please enter your speech now.",
+                suggested_speech,
+                metadata={"day_number": self.state.day_number},
+            )
             
             # 记录 Agent 交互
             self.logger.log_agent_interaction(
                 agent_id=f"Player_{player_id}",
                 prompt=str(context),
-                response=speech,
+                response=suggested_speech,
                 context={"phase": "day_speech", "day_number": self.state.day_number}
             )
             
@@ -444,7 +572,14 @@ class WerewolfOrchestrator:
         # PK 发言（按玩家 ID 排序）
         candidates.sort()  # 按 ID 排序
         for candidate_id in candidates:
-            speech = await self.agents[candidate_id].pk_speech()
+            suggested_speech = await self.agents[candidate_id].pk_speech()
+            speech = await self._resolve_human_speech(
+                candidate_id,
+                "president_pk_speech",
+                "Please enter your PK speech now.",
+                suggested_speech,
+                metadata={"phase": "president_election_pk"},
+            )
             self.logger.log_event("pk_speech", {
                 "player_id": candidate_id,
                 "content": speech
@@ -532,13 +667,21 @@ class WerewolfOrchestrator:
                 "alive_players": alive_players
             })
             
-            target = await self.agents[voter_id].vote(context)
+            suggested_target = await self.agents[voter_id].vote(context)
+            target = await self._resolve_human_target(
+                voter_id,
+                "day_vote",
+                "Please enter the player number to vote for, or pass to abstain.",
+                suggested_target,
+                candidates,
+                metadata={"day_number": self.state.day_number},
+            )
             
             # 记录 Agent 投票交互
             self.logger.log_agent_interaction(
                 agent_id=f"Player_{voter_id}",
                 prompt=str(context),
-                response=str(target),
+                response=str(suggested_target),
                 context={"phase": "voting", "day_number": self.state.day_number}
             )
             
@@ -641,7 +784,14 @@ class WerewolfOrchestrator:
             player = self.state.players[player_id]
             if player.has_last_words:
                 self._set_phase("last_words", {"player_id": player_id, "context": "night_death"})
-                speech = await self.agents[player_id].make_last_words()
+                suggested_speech = await self.agents[player_id].make_last_words()
+                speech = await self._resolve_human_speech(
+                    player_id,
+                    "last_words",
+                    "Please enter your speech now.",
+                    suggested_speech,
+                    metadata={"context": "night_death"},
+                )
                 self.logger.log_event("last_words", {
                     "player_id": player_id,
                     "content": speech
@@ -680,13 +830,22 @@ class WerewolfOrchestrator:
             "guarded_players": guard.guarded_players
         })
         
-        action = await self.agents[guard_id].night_action(context)
+        suggested_action = await self.agents[guard_id].night_action(context)
+        target = await self._resolve_human_target(
+            guard_id,
+            "guard_action",
+            "Please enter the player number to guard, or pass to skip.",
+            suggested_action.get("target"),
+            context["alive_players"],
+            metadata={"role": "guard", "night_number": self.state.night_number},
+        )
+        action = {"action": "guard" if target is not None else "skip", "target": target}
         
         # 记录 Agent 夜晚行动交互
         self.logger.log_agent_interaction(
             agent_id=f"Guard_{guard_id}",
             prompt=str(context),
-            response=str(action),
+            response=str(suggested_action),
             context={"phase": "night_action", "role": "guard", "night_number": self.state.night_number}
         )
         
@@ -727,7 +886,16 @@ class WerewolfOrchestrator:
                 "wolf_teammates": [wid for wid in wolf_ids if wid != wolf_id]
             })
 
-            action = await self.agents[wolf_id].night_action(context)
+            suggested_action = await self.agents[wolf_id].night_action(context)
+            target = await self._resolve_human_target(
+                wolf_id,
+                "wolf_action",
+                "Please enter the werewolf target player number, or pass to skip.",
+                suggested_action.get("target"),
+                [pid for pid in alive_players if pid != wolf_id],
+                metadata={"role": "werewolf", "night_number": self.state.night_number},
+            )
+            action = {"action": "attack" if target is not None else "skip", "target": target}
 
             self.logger.log_agent_interaction(
                 agent_id=f"Wolf_{wolf_id}",
@@ -824,7 +992,14 @@ class WerewolfOrchestrator:
             # 注意：wolf_target 不传递给女巫 Agent，由 Orchestrator 处理 save_target
         }
 
-        action = await self.agents[witch_id].night_action(context)
+        suggested_action = await self.agents[witch_id].night_action(context)
+        action = await self._resolve_human_witch_action(
+            witch_id,
+            "Enter save, poison <player>, save poison <player>, or pass.",
+            suggested_action,
+            [pid for pid in self.state.get_alive_players() if pid != witch_id],
+            metadata={"role": "witch", "night_number": self.state.night_number},
+        )
 
         # 记录 Agent 夜晚行动交互
         self.logger.log_agent_interaction(
@@ -897,7 +1072,16 @@ class WerewolfOrchestrator:
             "checked_players": seer.checked_players
         })
         
-        action = await self.agents[seer_id].night_action(context)
+        suggested_action = await self.agents[seer_id].night_action(context)
+        target = await self._resolve_human_target(
+            seer_id,
+            "seer_action",
+            "Please enter the player number to inspect, or pass to skip.",
+            suggested_action.get("target"),
+            [pid for pid in self.state.get_alive_players() if pid != seer_id],
+            metadata={"role": "seer", "night_number": self.state.night_number},
+        )
+        action = {"action": "check" if target is not None else "skip", "target": target}
         
         # 记录 Agent 夜晚行动交互
         self.logger.log_agent_interaction(
@@ -1100,13 +1284,21 @@ class WerewolfOrchestrator:
             "hunter_role": self.state.players[hunter_id].role.value
         })
 
-        target = await self.agents[hunter_id].hunter_skill(context)
+        suggested_target = await self.agents[hunter_id].hunter_skill(context)
+        target = await self._resolve_human_target(
+            hunter_id,
+            "hunter_skill",
+            "Please enter the player number to shoot, or pass to skip.",
+            suggested_target,
+            alive,
+            metadata={"role": "hunter", "death_cause": str(death_cause)},
+        )
 
         # 记录 Agent 猎人技能交互
         self.logger.log_agent_interaction(
             agent_id=f"Hunter_{hunter_id}",
             prompt=str(context),
-            response=str(target),
+            response=str(suggested_target),
             context={"phase": "hunter_skill", "death_cause": str(death_cause)}
         )
 
@@ -1165,7 +1357,14 @@ class WerewolfOrchestrator:
                 "all_candidates": candidates
             })
             
-            speech = await self.agents[candidate_id].president_speech()
+            suggested_speech = await self.agents[candidate_id].president_speech()
+            speech = await self._resolve_human_speech(
+                candidate_id,
+                "president_speech",
+                "Please enter your president campaign speech.",
+                suggested_speech,
+                metadata={"phase": "president_election_speech"},
+            )
             
             # 记录 Agent 竞选发言交互
             self.logger.log_agent_interaction(
@@ -1201,13 +1400,21 @@ class WerewolfOrchestrator:
                 "alive_players": self.state.get_alive_players()
             })
             
-            vote = await self.agents[voter_id].vote_for_president(candidates)
+            suggested_vote = await self.agents[voter_id].vote_for_president(candidates)
+            vote = await self._resolve_human_target(
+                voter_id,
+                "president_vote",
+                "Please enter the candidate number for president vote, or pass to abstain.",
+                suggested_vote,
+                candidates,
+                metadata={"phase": "president_election_voting"},
+            )
             
             # 记录 Agent 投票交互
             self.logger.log_agent_interaction(
                 agent_id=f"Player_{voter_id}",
                 prompt=str(context),
-                response=str(vote),
+                response=str(suggested_vote),
                 context={"phase": "president_election_voting"}
             )
             
@@ -1260,7 +1467,15 @@ class WerewolfOrchestrator:
         # 再次投票
         votes = {}
         for voter_id in self.state.get_alive_players():
-            vote = await self.agents[voter_id].vote_for_president(winners)
+            suggested_vote = await self.agents[voter_id].vote_for_president(winners)
+            vote = await self._resolve_human_target(
+                voter_id,
+                "president_vote",
+                "Please enter the candidate number for president PK vote, or pass to abstain.",
+                suggested_vote,
+                winners,
+                metadata={"phase": "president_election_pk"},
+            )
             votes[voter_id] = vote
 
         # 计票

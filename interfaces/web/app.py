@@ -55,6 +55,8 @@ class WerewolfWebApplication:
                         {
                             "session_id": session.session_id,
                             "game_id": session.game_id,
+                            "mode": session.mode,
+                            "human_player_id": session.human_player_id,
                             "lifecycle_status": session.lifecycle_status,
                         },
                         meta=self._meta(request_id),
@@ -74,6 +76,10 @@ class WerewolfWebApplication:
                         meta=self._meta(request_id),
                     ),
                 )
+            if path == "/api/session/join" and handler.command == "POST":
+                payload = self._read_json(handler)
+                data = self.controller.join_session(payload)
+                return self._send_json(handler, success_response(data, meta=self._meta(request_id)))
             if path == "/api/state" and handler.command == "GET":
                 view_type = query.get("view_type", ["god"])[0]
                 viewer_player_id = query.get("viewer_player_id", [None])[0]
@@ -83,7 +89,15 @@ class WerewolfWebApplication:
             if path == "/api/events" and handler.command == "GET":
                 last_sequence = int(query.get("last_sequence", ["0"])[0])
                 limit = int(query.get("limit", ["200"])[0])
-                data = self.controller.get_events(last_sequence=last_sequence, limit=limit)
+                view_type = query.get("view_type", ["god"])[0]
+                viewer_player_id = query.get("viewer_player_id", [None])[0]
+                viewer_player_id = int(viewer_player_id) if viewer_player_id else None
+                data = self.controller.get_events(
+                    last_sequence=last_sequence,
+                    limit=limit,
+                    view_type=view_type,
+                    viewer_player_id=viewer_player_id,
+                )
                 return self._send_json(handler, success_response(data, meta=self._meta(request_id)))
             if path == "/api/review" and handler.command == "GET":
                 data = self.controller.get_review_status()

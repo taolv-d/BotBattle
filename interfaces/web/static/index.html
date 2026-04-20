@@ -3,120 +3,148 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BotBattle &#x72FC;&#x4EBA;&#x6740;&#x540E;&#x53F0;&#x9875;</title>
+  <title>BotBattle 狼人杀</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <div class="page">
-    <header class="topbar">
+  <div class="page-shell">
+    <header class="hero-bar">
       <div>
-        <h1>BotBattle &#x72FC;&#x4EBA;&#x6740;&#x540E;&#x53F0;&#x9875;</h1>
-        <p id="subtitle">&#x4E0A;&#x5E1D;&#x89C6;&#x89D2;&#x8FD0;&#x884C;&#x76D1;&#x63A7;&#x4E0E;&#x8C03;&#x8BD5;&#x89C2;&#x5BDF;</p>
+        <h1>BotBattle 狼人杀</h1>
+        <p id="heroSubtitle">支持上帝后台观察和单真人玩家参与</p>
       </div>
-      <div class="actions">
-        <button id="createBtn">&#x521B;&#x5EFA;&#x5BF9;&#x5C40;</button>
-        <button id="startBtn">&#x542F;&#x52A8;&#x5BF9;&#x5C40;</button>
-        <button id="refreshBtn">&#x7ACB;&#x5373;&#x5237;&#x65B0;</button>
+      <div class="hero-actions">
+        <button id="globalRefreshBtn">刷新状态</button>
       </div>
     </header>
 
-    <section class="panel controls">
-      <div class="control-row">
-        <label>&#x6A21;&#x5F0F;
-          <select id="mode">
-            <option value="observer">&#x89C2;&#x5BDF;&#x6A21;&#x5F0F;</option>
-            <option value="player">&#x73A9;&#x5BB6;&#x6A21;&#x5F0F;&#xFF08;&#x540E;&#x7EED;&#x5B9E;&#x73B0;&#xFF09;</option>
-          </select>
-        </label>
-        <label>&#x771F;&#x4EBA;&#x5EA7;&#x4F4D;
-          <input id="humanPlayerId" type="number" min="1" placeholder="&#x73A9;&#x5BB6;&#x6A21;&#x5F0F;&#x542F;&#x7528;&#x540E;&#x53EF;&#x586B;&#x5199;">
-        </label>
-        <label>&#x590D;&#x76D8;&#x6A21;&#x5F0F;
-          <select id="reviewMode">
-            <option value="summary">summary</option>
-            <option value="detailed" selected>detailed</option>
-            <option value="analysis">analysis</option>
-          </select>
-        </label>
-        <label class="checkbox">
-          <input id="reviewEnabled" type="checkbox" checked>
-          &#x542F;&#x7528;&#x590D;&#x76D8;
-        </label>
-        <label class="checkbox">
-          <input id="detectLoopholes" type="checkbox">
-          &#x68C0;&#x6D4B;&#x6F0F;&#x6D1E;
-        </label>
-      </div>
-    </section>
+    <main>
+      <section id="landingPage" class="screen active">
+        <div class="screen-grid landing-grid">
+          <section class="panel landing-panel">
+            <h2>创建游戏</h2>
+            <p class="muted">请选择运行模式。上帝后台可自动观察整局；玩家参与会绑定一个真人座位。</p>
 
-    <section class="panel status-bar" id="statusBar">
-      <div class="status-item"><span>Session</span><strong id="sessionId">-</strong></div>
-      <div class="status-item"><span>Game</span><strong id="gameId">-</strong></div>
-      <div class="status-item"><span>Lifecycle</span><strong id="lifecycleStatus">-</strong></div>
-      <div class="status-item"><span>Phase</span><strong id="phase">-</strong></div>
-      <div class="status-item"><span>Day/Night</span><strong id="dayNight">-</strong></div>
-      <div class="status-item"><span>President</span><strong id="presidentId">-</strong></div>
-      <div class="status-item"><span>Alive</span><strong id="aliveCount">-</strong></div>
-    </section>
+            <div class="form-grid">
+              <label>
+                <span>真人座位</span>
+                <input id="humanPlayerId" type="number" min="1" value="1">
+              </label>
+              <label>
+                <span>复盘模式</span>
+                <select id="reviewMode">
+                  <option value="summary">summary</option>
+                  <option value="detailed" selected>detailed</option>
+                  <option value="analysis">analysis</option>
+                </select>
+              </label>
+            </div>
 
-    <main class="layout">
-      <section class="panel players-panel">
-        <div class="panel-header">
-          <h2>&#x73A9;&#x5BB6;&#x9762;&#x677F;</h2>
+            <div class="form-grid checkbox-grid">
+              <label class="checkbox-row">
+                <input id="reviewEnabled" type="checkbox" checked>
+                <span>启用复盘</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="detectLoopholes" type="checkbox">
+                <span>检测漏洞</span>
+              </label>
+            </div>
+
+            <div class="button-row">
+              <button id="startObserverBtn" class="primary-btn">开始上帝后台</button>
+              <button id="startPlayerBtn" class="secondary-btn">开始玩家参与</button>
+              <button id="joinGameBtn" class="ghost-btn">加入游戏（保留接口）</button>
+            </div>
+            <div id="landingHint" class="assistant-hint"></div>
+          </section>
+
+          <section class="panel info-panel">
+            <h2>模式说明</h2>
+            <ul class="plain-list">
+              <li>上帝后台：无需玩家输入，自动推进游戏，右侧显示全局监控信息。</li>
+              <li>玩家参与：绑定一个真人座位，轮到该玩家时右侧显示 Agent 建议和输入框。</li>
+              <li>测试阶段玩家等待时间为 1 秒，超时会自动采用 Agent 建议。</li>
+              <li>结束后会进入复盘页面，显示胜负结果和复盘状态。</li>
+            </ul>
+          </section>
         </div>
-        <table class="players-table">
-          <thead>
-            <tr>
-              <th>&#x5EA7;&#x4F4D;</th>
-              <th>&#x5B58;&#x6D3B;</th>
-              <th>&#x8EAB;&#x4EFD;</th>
-              <th>&#x9635;&#x8425;</th>
-              <th>&#x8B66;&#x957F;</th>
-            </tr>
-          </thead>
-          <tbody id="playersBody"></tbody>
-        </table>
       </section>
 
-      <section class="panel timeline-panel">
-        <div class="panel-header">
-          <h2>&#x4E8B;&#x4EF6;&#x65F6;&#x95F4;&#x7EBF;</h2>
-          <div class="filters">
-            <select id="eventFilter">
-              <option value="all">&#x5168;&#x90E8;&#x4E8B;&#x4EF6;</option>
-              <option value="speech">&#x53D1;&#x8A00;&#x76F8;&#x5173;</option>
-              <option value="vote">&#x6295;&#x7968;&#x76F8;&#x5173;</option>
-              <option value="night">&#x591C;&#x665A;&#x76F8;&#x5173;</option>
-              <option value="system">&#x7CFB;&#x7EDF;&#x76F8;&#x5173;</option>
-            </select>
+      <section id="gamePage" class="screen">
+        <section class="panel session-strip">
+          <div class="session-grid">
+            <div><span>Session</span><strong id="sessionId">-</strong></div>
+            <div><span>Game</span><strong id="gameId">-</strong></div>
+            <div><span>Mode</span><strong id="modeText">-</strong></div>
+            <div><span>Phase</span><strong id="phaseText">-</strong></div>
+            <div><span>Day/Night</span><strong id="dayNightText">-</strong></div>
+            <div><span>Lifecycle</span><strong id="lifecycleText">-</strong></div>
           </div>
+        </section>
+
+        <section class="game-layout">
+          <section class="panel chat-panel">
+            <div class="panel-header">
+              <div>
+                <h2>游戏对话</h2>
+                <p class="muted">玩家发言、系统播报和关键流程节点</p>
+              </div>
+            </div>
+            <div id="chatFeed" class="chat-feed"></div>
+          </section>
+
+          <section id="playerSidePanel" class="panel assistant-panel">
+            <div class="panel-header">
+              <div>
+                <h2>Agent 帮手</h2>
+                <p class="muted">玩家模式下轮到你时在这里输入</p>
+              </div>
+            </div>
+            <div id="assistantPrivateInfo" class="assistant-private"></div>
+            <div id="assistantState" class="assistant-state"></div>
+            <div id="assistantSuggestion" class="assistant-suggestion"></div>
+            <label class="input-label" for="playerInputBox">你的输入</label>
+            <textarea id="playerInputBox" class="player-input" rows="6" placeholder="轮到你时再输入……"></textarea>
+            <div class="button-row">
+              <button id="useSuggestionBtn" class="secondary-btn">直接采用建议</button>
+              <button id="submitInputBtn" class="primary-btn">提交输入</button>
+            </div>
+            <div id="assistantHint" class="assistant-hint"></div>
+          </section>
+
+          <section id="observerSidePanel" class="panel observer-panel">
+            <div class="panel-header">
+              <div>
+                <h2>后台监控</h2>
+                <p class="muted">上帝视角状态，用来检查游戏是否正常运行</p>
+              </div>
+            </div>
+            <div id="observerSummary" class="observer-summary"></div>
+            <div id="observerPlayers" class="observer-players"></div>
+            <div id="observerReview" class="observer-review"></div>
+          </section>
+        </section>
+      </section>
+
+      <section id="reviewPage" class="screen">
+        <div class="screen-grid review-grid">
+          <section class="panel review-main-panel">
+            <h2>对局结束</h2>
+            <div id="resultSummary" class="result-summary"></div>
+            <div id="reviewSummary" class="review-summary"></div>
+            <div class="button-row">
+              <button id="backToLandingBtn" class="ghost-btn">返回首页</button>
+            </div>
+          </section>
+          <section class="panel review-side-panel">
+            <h2>复盘状态</h2>
+            <div id="reviewStatusBox"></div>
+          </section>
         </div>
-        <div class="timeline" id="timeline"></div>
       </section>
     </main>
-
-    <section class="panel speech-feed-panel">
-      <div class="panel-header">
-        <div>
-          <h2>&#x7FA4;&#x804A;&#x89C6;&#x56FE;</h2>
-          <p class="panel-subtitle">&#x6309;&#x804A;&#x5929;&#x65B9;&#x5F0F;&#x96C6;&#x4E2D;&#x5C55;&#x793A;&#x73A9;&#x5BB6;&#x53D1;&#x8A00;&#x4E0E;&#x5173;&#x952E;&#x7CFB;&#x7EDF;&#x64AD;&#x62A5;</p>
-        </div>
-      </div>
-      <div class="speech-feed" id="speechFeed"></div>
-    </section>
-
-    <section class="lower-grid">
-      <section class="panel review-panel">
-        <div class="panel-header"><h2>&#x590D;&#x76D8;&#x72B6;&#x6001;</h2></div>
-        <div id="reviewStatus">-</div>
-      </section>
-      <section class="panel error-panel">
-        <div class="panel-header"><h2>&#x9519;&#x8BEF; / &#x7B49;&#x5F85;&#x72B6;&#x6001;</h2></div>
-        <pre id="errorBox">&#x6682;&#x65E0;&#x9519;&#x8BEF;</pre>
-      </section>
-    </section>
   </div>
-
   <script src="/static/app.js"></script>
 </body>
 </html>

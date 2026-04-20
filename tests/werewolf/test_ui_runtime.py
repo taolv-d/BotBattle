@@ -1,6 +1,7 @@
-﻿import json
+import json
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -65,7 +66,7 @@ class WerewolfUiRuntimeTests(unittest.TestCase):
         self.assertEqual(1, events[0]["sequence"])
         self.assertEqual(2, events[1]["sequence"])
 
-    def test_controller_create_session_and_serialize_state(self):
+    def test_controller_create_observer_session_and_serialize_state(self):
         controller = WerewolfRuntimeController(config_dir=self._create_temp_config_dir(), max_events=50)
         controller.create_session({"mode": "observer", "review_enabled": False})
         summary = controller.get_session_summary()
@@ -77,12 +78,17 @@ class WerewolfUiRuntimeTests(unittest.TestCase):
         self.assertEqual(4, len(state["players"]))
         self.assertEqual("disabled", state["review_status"]["status"])
 
-    def test_controller_rejects_player_mode_for_current_release(self):
-        controller = WerewolfRuntimeController(config_dir=self._create_temp_config_dir(), max_events=50)
-        with self.assertRaises(RuntimeApiError) as context:
-            controller.create_session({"mode": "player", "human_player_id": 1, "review_enabled": False})
-        self.assertEqual("MODE_NOT_IMPLEMENTED", context.exception.info.code)
-        self.assertEqual(501, context.exception.info.status_code)
+    def test_controller_create_player_session(self):
+        controller = WerewolfRuntimeController(config_dir=self._create_temp_config_dir(), max_events=50, player_timeout_seconds=3.0)
+        controller.create_session({"mode": "player", "human_player_id": 1, "review_enabled": False})
+        summary = controller.get_session_summary()
+        state = controller.get_state(view_type="player", viewer_player_id=1)
+
+        self.assertEqual("player", summary["mode"])
+        self.assertEqual(1, summary["human_player_id"])
+        self.assertEqual("werewolf", state["players"][0]["role"])
+        self.assertIsNotNone(state["private_info"])
+        self.assertEqual("werewolf", state["private_info"]["role"])
 
     def test_controller_validates_player_view(self):
         controller = WerewolfRuntimeController(config_dir=self._create_temp_config_dir(), max_events=50)
@@ -99,6 +105,51 @@ class WerewolfUiRuntimeTests(unittest.TestCase):
         player_state = controller.get_state(view_type="player", viewer_player_id=1)
         self.assertIsNotNone(player_state["players"][0]["role"])
         self.assertTrue(all(player["role"] is None for player in player_state["players"][1:]))
+
+    def test_observer_session_runs_without_human_input(self):
+        controller = WerewolfRuntimeController(config_dir=self._create_temp_config_dir(), max_events=200, player_timeout_seconds=3.0)
+        controller.create_session({"mode": "observer", "review_enabled": False})
+        controller.start_session()
+
+        deadline = time.time() + 2.0
+        observed_state = None
+        while time.time() < deadline:
+            observed_state = controller.get_state(view_type="god")
+            if observed_state["phase"] != "setup":
+                break
+            time.sleep(0.1)
+
+        self.assertIsNotNone(observed_state)
+        self.assertEqual("observer", observed_state["mode"])
+        self.assertIsNone(observed_state["pending_input"])
+        self.assertNotEqual("waiting_input", observed_state["lifecycle_status"])
+
+        events = controller.get_events(view_type="god")
+        self.assertGreaterEqual(events["last_sequence"], 0)
+    def test_player_session_enters_waiting_input(self):
+        controller = WerewolfRuntimeController(config_dir=self._create_temp_config_dir(), max_events=200, player_timeout_seconds=3.0)
+        controller.create_session({"mode": "player", "human_player_id": 1, "review_enabled": False})
+        controller.start_session()
+
+        deadline = time.time() + 5.0
+        pending_state = None
+        while time.time() < deadline:
+            pending_state = controller.get_state(view_type="player", viewer_player_id=1)
+            if pending_state["pending_input"]:
+                break
+            time.sleep(0.1)
+
+        self.assertIsNotNone(pending_state)
+        self.assertIsNotNone(pending_state["pending_input"])
+        self.assertEqual(1, pending_state["pending_input"]["player_id"])
+        self.assertEqual("waiting_input", pending_state["lifecycle_status"])
+
+        response = controller.submit_input({
+            "request_id": pending_state["pending_input"]["request_id"],
+            "player_id": 1,
+            "content": pending_state["pending_input"]["suggestion_submit_value"],
+        })
+        self.assertTrue(response["accepted"])
 
     def test_web_application_routes(self):
         controller = WerewolfRuntimeController(config_dir=self._create_temp_config_dir(), max_events=50)
@@ -128,15 +179,20 @@ class WerewolfUiRuntimeTests(unittest.TestCase):
         self.assertEqual(404, status)
         self.assertEqual("SESSION_NOT_FOUND", payload["error"]["code"])
 
-        status, payload = request("/api/session", method="POST", payload={"mode": "observer", "review_enabled": False})
+        status, payload = request("/api/session", method="POST", payload={"mode": "player", "human_player_id": 1, "review_enabled": False})
         self.assertEqual(201, status)
         self.assertTrue(payload["ok"])
+        self.assertEqual("player", payload["data"]["mode"])
+
+        status, payload = request("/api/session/join", method="POST", payload={})
+        self.assertEqual(501, status)
+        self.assertEqual("JOIN_NOT_IMPLEMENTED", payload["error"]["code"])
 
         status, payload = request("/api/state?view_type=player")
         self.assertEqual(400, status)
         self.assertEqual("VIEWER_REQUIRED", payload["error"]["code"])
 
-        status, payload = request("/api/session", method="POST", payload={"mode": "player", "human_player_id": 1})
+        status, payload = request("/api/session", method="POST", payload={"mode": "observer", "review_enabled": False})
         self.assertEqual(400, status)
         self.assertEqual("SESSION_ALREADY_EXISTS", payload["error"]["code"])
 
